@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 Mark Phelps
+# SPDX-License-Identifier: Apache-2.0
+
+.plot
+.worktrees/
+.DS_Store
+__pycache__/
+*.py[cod]
+firmware/.cache/
+firmware/build/
+firmware/build-perf/
+firmware/managed_components/
+firmware/sdkconfig
+backups/
+reports/

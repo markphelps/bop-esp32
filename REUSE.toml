@@ -1,0 +1,72 @@
+version = 1
+SPDX-PackageName = "bop"
+SPDX-PackageDownloadLocation = "https://github.com/markphelps/bop-esp32"
+
+# Every file listed here gets its license and copyright from this file. Every
+# other tracked file carries its own SPDX header. Three paths are the exception,
+# because the REUSE specification does not count them as covered files:
+# `LICENSE`, `REUSE.toml`, and everything under `LICENSES/`. The license texts
+# must stay plain, and this file is the licensing record rather than a subject
+# of it.
+#
+# "Not a covered file" means "needs no SPDX header". It does not mean the lint
+# skips the path. Four of the lint's checks read `LICENSES/` and nothing else,
+# which is why this change had to rename `Montserrat-OFL.txt` to `OFL-1.1.txt`.
+#
+# A file belongs here for one of three reasons: it is binary or generated, so a
+# header would be lost or impossible (the two font files), a comment would be
+# noise to the reader (the documents), or a generator rewrites it and would drop
+# the comment (the dependency lock).
+#
+# Every block below uses "override", and every path is written out in full.
+# Read those two rules together, because each one holds the other in place:
+#
+# - "override" is necessary. Under "closest", a string that REUSE reads as a
+#   copyright notice REPLACES the holder named here. Under "aggregate", it is
+#   ADDED next to it. Either way the result is wrong. REUSE matches the word
+#   "Copyright" ANYWHERE in a line, not only at the start, so the mid-sentence
+#   notices this project quotes for LVGL and TJpgDec are enough to trigger it,
+#   and so is the U+00A9 glyph comment inside the generated font. `reuse lint`
+#   stays green while the wrong holder lands in the machine-readable data.
+# - "override" is also dangerous, which is why no path here is a wildcard. A
+#   pattern like "**.md" plus "override" would stamp the project copyright onto
+#   a third-party document that already names its own holder, and lint would
+#   stay green for that too.
+#
+# So name each new file THAT BELONGS HERE by hand. Every other file carries its
+# own header instead. Forget one and `mise run licenses` turns red, which is the
+# loud failure this file is arranged to get.
+
+[[annotations]]
+path = [
+  "README.md",
+  "INSTALL.md",
+  "EULA.md",
+  "PRIVACY.md",
+  "SECURITY.md",
+  "THIRD_PARTY_LICENSES.md",
+  "docs/HOW-IT-WORKS.md",
+  "docs/TROUBLESHOOTING.md",
+]
+precedence = "override"
+SPDX-FileCopyrightText = "2026 Mark Phelps"
+SPDX-License-Identifier = "Apache-2.0"
+
+# Written by the ESP-IDF component manager. Regenerated on every dependency
+# change, so a hand-written header would not survive.
+[[annotations]]
+path = "firmware/dependencies.lock"
+precedence = "override"
+SPDX-FileCopyrightText = "2026 Mark Phelps"
+SPDX-License-Identifier = "Apache-2.0"
+
+# Montserrat, and the LVGL bitmap font built from it. Both stay under the SIL
+# Open Font License. See THIRD_PARTY_LICENSES.md.
+[[annotations]]
+path = [
+  "firmware/main/ui/fonts/Montserrat-Bold.ttf",
+  "firmware/main/ui/fonts/lv_font_montserrat_bold_24.c",
+]
+precedence = "override"
+SPDX-FileCopyrightText = "2011 The Montserrat Project Authors (https://github.com/JulietaUla/Montserrat)"
+SPDX-License-Identifier = "OFL-1.1"

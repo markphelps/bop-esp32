@@ -1,0 +1,103 @@
+# SPDX-FileCopyrightText: 2026 Mark Phelps
+# SPDX-License-Identifier: Apache-2.0
+
+[tools]
+python = "3.13.15"
+pipx = "1.16.6"
+"pipx:esptool" = "5.3.1"
+gitleaks = "8.30.1"
+cmake = "3.30.9"
+ninja = "1.13.2"
+
+[env]
+SPOT_PROJECT_ROOT = "{{config_root}}"
+
+[hooks]
+postinstall = { task = "setup" }
+
+[tasks.setup]
+description = "Install the pinned ESP-IDF toolchain"
+run = "python tools/setup_idf.py"
+
+[tasks.build]
+description = "Build the firmware"
+depends = ["setup"]
+run = "python tools/run_idf.py build"
+
+[tasks.build-perf]
+description = "Build firmware with the LVGL FPS monitor"
+depends = ["setup"]
+env = { SPOT_PERF_MONITOR = "1" }
+run = "python tools/run_idf.py -B build-perf build"
+
+[tasks.backup]
+description = "Back up the complete 16 MB factory flash"
+depends = ["setup"]
+run = "python tools/backup_flash.py"
+
+[tasks.restore]
+description = "Write the verified credential-free factory image back to the device"
+depends = ["setup"]
+run = "python tools/restore.py"
+
+[tasks.provision]
+description = "Authorize Spotify and write WiFi values to the device"
+depends = ["setup", "backup"]
+run = "python tools/provision.py"
+
+[tasks.deprovision]
+description = "Remove Spotify access and erase device credentials through USB"
+depends = ["setup"]
+run = "python tools/deprovision.py"
+
+[tasks.flash]
+description = "Back up the factory image, then flash the firmware"
+depends = ["setup", "backup"]
+run = "python tools/run_idf.py flash"
+
+[tasks.flash-perf]
+description = "Flash the firmware with the LVGL FPS monitor"
+depends = ["setup", "backup"]
+env = { SPOT_PERF_MONITOR = "1" }
+run = "python tools/run_idf.py -B build-perf flash"
+
+[tasks.monitor]
+description = "Open the serial monitor for the normal firmware"
+depends = ["setup"]
+env = { ESP_IDF_MONITOR_CFGFILE = "{{config_root}}/tools/esp-idf-monitor.cfg" }
+run = "python tools/run_idf.py monitor"
+
+[tasks.monitor-perf]
+description = "Open the serial monitor for the performance firmware"
+depends = ["setup"]
+env = { ESP_IDF_MONITOR_CFGFILE = "{{config_root}}/tools/esp-idf-monitor.cfg", SPOT_PERF_MONITOR = "1" }
+run = "python tools/run_idf.py -B build-perf monitor"
+
+[tasks.test-host]
+description = "Run host-side task checks without a board"
+run = "python tools/test_task_cancellation.py && python tools/test_provision.py && python tools/test_display_recovery.py && python tools/test_playback_feedback.py && python tools/test_deprovision.py && python tools/test_backup.py && python tools/test_export.py"
+
+[tasks.export]
+description = "Build the clean public root commit and record its inventory"
+run = "python tools/export_public.py --record reports/export-inventory.md"
+
+[tasks.secrets]
+description = "Scan the tracked files and every branch and tag for secrets"
+run = "python tools/leak_scan.py"
+
+[tasks.licenses]
+description = "Check that every source file records a license and a copyright holder"
+# REUSE 6.2.0 needs an encoding-detection module, and the mise pipx backend
+# drops the extra that supplies it. `pipx run --spec` keeps both the pin and
+# the extra, on every platform.
+run = 'pipx run --spec "reuse[charset-normalizer]==6.2.0" reuse lint'
+
+[tasks.clean]
+description = "Remove ESP-IDF build output"
+depends = ["setup"]
+run = "python tools/run_idf.py fullclean"
+
+[tasks.menuconfig]
+description = "Open the ESP-IDF configuration menu"
+depends = ["setup"]
+run = "python tools/run_idf.py menuconfig"
