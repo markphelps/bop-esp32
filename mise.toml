@@ -75,11 +75,7 @@ run = "python tools/run_idf.py -B build-perf monitor"
 
 [tasks.test-host]
 description = "Run host-side task checks without a board"
-run = "python tools/test_task_cancellation.py && python tools/test_provision.py && python tools/test_display_recovery.py && python tools/test_playback_feedback.py && python tools/test_deprovision.py && python tools/test_backup.py && python tools/test_export.py"
-
-[tasks.export]
-description = "Build the clean public root commit and record its inventory"
-run = "python tools/export_public.py --record reports/export-inventory.md"
+run = "python tools/test_task_cancellation.py && python tools/test_provision.py && python tools/test_display_recovery.py && python tools/test_playback_feedback.py && python tools/test_deprovision.py && python tools/test_backup.py"
 
 [tasks.secrets]
 description = "Scan the tracked files and every branch and tag for secrets"
