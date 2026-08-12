@@ -20,7 +20,7 @@
 #define AXP2101_VBUS_GOOD_BIT (1U << 5)
 #define POWER_POLL_MS 5000
 
-static const char *TAG = "spot_power";
+static const char *TAG = "bop_power";
 static i2c_master_dev_handle_t power_device;
 static atomic_bool on_battery;
 
@@ -55,7 +55,7 @@ static void power_task(void *argument)
     }
 }
 
-esp_err_t spot_power_start(void)
+esp_err_t bop_power_start(void)
 {
     if (power_device != NULL) {
         return ESP_ERR_INVALID_STATE;
@@ -85,7 +85,7 @@ esp_err_t spot_power_start(void)
     }
 
     update_power_source();
-    if (xTaskCreate(power_task, "spot_power", 3072, NULL, 3, NULL) != pdPASS) {
+    if (xTaskCreate(power_task, "bop_power", 3072, NULL, 3, NULL) != pdPASS) {
         i2c_master_bus_rm_device(power_device);
         power_device = NULL;
         return ESP_ERR_NO_MEM;
@@ -94,7 +94,7 @@ esp_err_t spot_power_start(void)
     return ESP_OK;
 }
 
-bool spot_power_on_battery(void)
+bool bop_power_on_battery(void)
 {
     return atomic_load(&on_battery);
 }

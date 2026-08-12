@@ -11,6 +11,7 @@ import hashlib
 from io import StringIO
 import os
 from pathlib import Path
+import re
 import struct
 import sys
 from types import ModuleType
@@ -105,14 +106,14 @@ def test_port_override_must_identify_an_espressif_usb_device() -> None:
         sys.modules,
         {"serial": serial, "serial.tools": tools, "serial.tools.list_ports": list_ports},
     ):
-        with patch.dict(os.environ, {"SPOT_PORT": "socket://device.example:3232"}):
+        with patch.dict(os.environ, {"BOP_PORT": "socket://device.example:3232"}):
             try:
                 detect_port.detect_port()
             except RuntimeError as error:
                 assert "not a connected Espressif USB serial port" in str(error)
             else:
                 raise AssertionError("detect_port accepted a non-USB override")
-        with patch.dict(os.environ, {"SPOT_PORT": "/dev/usbmodem"}):
+        with patch.dict(os.environ, {"BOP_PORT": "/dev/usbmodem"}):
             assert detect_port.detect_port() == "/dev/usbmodem"
 
 
@@ -132,7 +133,7 @@ def test_device_inspection_uses_bop_identity_checks() -> None:
     assert 'loader.CHIP_NAME != "ESP32-S3"' in command
     assert 'entries.get("nvs") != expected_nvs' in command
     assert 'entries.get("factory") != expected_factory' in command
-    assert 'project_name != "spot"' in command
+    assert 'project_name != "bop"' in command
     assert 'loader.read_mac("BASE_MAC")' in command
 
 
@@ -174,7 +175,7 @@ def bop_partition_table() -> bytes:
 def app_description() -> bytes:
     description = bytearray(b"\0" * 256)
     struct.pack_into("<L", description, 0, 0xABCD5432)
-    description[48:52] = b"spot"
+    description[48:51] = b"bop"
     return bytes(description)
 
 
@@ -216,6 +217,15 @@ def run_erase_command(loader: FakeLoader, expected_mac: str = MAC) -> None:
     ]
     with patch.dict(sys.modules, {"esptool": esptool}), patch.object(sys, "argv", arguments):
         exec(deprovision.ERASE_VERIFIED_DEVICE_COMMAND, {"__name__": "__erase_test__"})
+
+
+def test_firmware_check_matches_the_cmake_project_name() -> None:
+    source = (deprovision.project_root() / "firmware/CMakeLists.txt").read_text(encoding="utf-8")
+    match = re.search(r"^\s*project\(([^)\s]+)\)", source, re.MULTILINE)
+    assert match is not None, "firmware/CMakeLists.txt does not name a project"
+    project_name = match.group(1)
+    assert len(project_name.encode("ascii")) < 32
+    assert f'project_name != "{project_name}"' in deprovision.DEVICE_VALIDATION_SOURCE
 
 
 def test_erase_region_matches_partition_table() -> None:
@@ -322,6 +332,7 @@ def main() -> int:
     test_failed_device_operation_returns_failure()
     test_port_override_must_identify_an_espressif_usb_device()
     test_device_inspection_uses_bop_identity_checks()
+    test_firmware_check_matches_the_cmake_project_name()
     test_erase_region_matches_partition_table()
     test_one_connection_rechecks_identity_erases_reads_and_resets()
     test_device_swap_stops_before_erase()

@@ -30,7 +30,7 @@
 #define TOKEN_REFRESH_MARGIN_SECONDS 60
 #define SPOTIFY_TASK_CORE 0
 
-static const char *TAG = "spot_spotify";
+static const char *TAG = "bop_spotify";
 
 typedef struct {
     char *data;
@@ -41,7 +41,7 @@ typedef struct {
 } response_buffer_t;
 
 typedef struct {
-    spot_credentials_t *credentials;
+    bop_credentials_t *credentials;
     char access_token[ACCESS_TOKEN_CAPACITY];
     int64_t access_token_expires_at;
     response_buffer_t response;
@@ -255,7 +255,7 @@ static esp_err_t refresh_access_token(client_context_t *context, int *retry_afte
             delete_token_response(root);
             return ESP_ERR_INVALID_SIZE;
         }
-        error = spot_credentials_store_refresh_token(rotated->valuestring);
+        error = bop_credentials_store_refresh_token(rotated->valuestring);
         if (error != ESP_OK) {
             delete_token_response(root);
             return error;
@@ -524,7 +524,7 @@ static esp_err_t send_command(
     bool *was_playing)
 {
     playback_state_t state = {0};
-    spot_spotify_get_state(&state);
+    bop_spotify_get_state(&state);
     *was_playing = state.is_playing;
     const char *url = NULL;
     esp_http_client_method_t method = HTTP_METHOD_POST;
@@ -592,7 +592,7 @@ static TickType_t delay_from_seconds(int seconds)
     return pdMS_TO_TICKS((uint32_t)seconds * 1000);
 }
 
-static client_context_t *create_client_context(spot_credentials_t *credentials)
+static client_context_t *create_client_context(bop_credentials_t *credentials)
 {
     client_context_t *context = malloc(sizeof(*context));
     if (context == NULL) {
@@ -656,12 +656,12 @@ static void client_task(void *argument)
             rate_limit_deadline = 0;
         }
 
-        spot_wifi_wait_connected();
+        bop_wifi_wait_connected();
         if (!command_pending) {
             TickType_t wait = ticks_until(poll_deadline);
             command_pending = xQueueReceive(command_queue, &pending_command, wait) == pdTRUE;
         }
-        spot_wifi_wait_connected();
+        bop_wifi_wait_connected();
 
         int backoff_seconds = 0;
         if (command_pending) {
@@ -680,7 +680,7 @@ static void client_task(void *argument)
             }
         }
 
-        spot_wifi_wait_connected();
+        bop_wifi_wait_connected();
         TickType_t poll_started = xTaskGetTickCount();
         poll_current_playback(context, &backoff_seconds);
         poll_deadline = poll_started + pdMS_TO_TICKS(POLL_INTERVAL_MS);
@@ -712,13 +712,13 @@ static void debug_console_task(void *argument)
         } else {
             continue;
         }
-        if (!spot_spotify_enqueue_command(command, 0)) {
+        if (!bop_spotify_enqueue_command(command, 0)) {
             ESP_LOGW(TAG, "Command queue is full");
         }
     }
 }
 
-esp_err_t spot_spotify_start(spot_credentials_t *credentials)
+esp_err_t bop_spotify_start(bop_credentials_t *credentials)
 {
     if (credentials == NULL || client_started) {
         return ESP_ERR_INVALID_STATE;
@@ -775,7 +775,7 @@ esp_err_t spot_spotify_start(spot_credentials_t *credentials)
     return ESP_OK;
 }
 
-bool spot_spotify_get_state(playback_state_t *state)
+bool bop_spotify_get_state(playback_state_t *state)
 {
     if (state == NULL || state_mutex == NULL) {
         return false;
@@ -787,7 +787,7 @@ bool spot_spotify_get_state(playback_state_t *state)
     return ready;
 }
 
-bool spot_spotify_enqueue_command(spotify_command_t command, uint32_t request_id)
+bool bop_spotify_enqueue_command(spotify_command_t command, uint32_t request_id)
 {
     if (command_queue == NULL) {
         return false;
@@ -799,7 +799,7 @@ bool spot_spotify_enqueue_command(spotify_command_t command, uint32_t request_id
     return xQueueSend(command_queue, &request, 0) == pdTRUE;
 }
 
-bool spot_spotify_get_command_result(spotify_command_result_t *result)
+bool bop_spotify_get_command_result(spotify_command_result_t *result)
 {
     if (result == NULL || command_result_queue == NULL) {
         return false;

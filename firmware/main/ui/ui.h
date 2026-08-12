@@ -5,4 +5,4 @@
 
 #include "esp_err.h"
 
-esp_err_t spot_ui_start(void);
+esp_err_t bop_ui_start(void);

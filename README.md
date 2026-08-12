@@ -1,6 +1,6 @@
-# spot
+# Bop
 
-`spot` is a Spotify remote for the Waveshare ESP32-S3 Touch AMOLED 1.8 board.
+Bop is a Spotify remote for the Waveshare ESP32-S3 Touch AMOLED 1.8 board.
 
 It shows the current track and sends touch controls to Spotify. It does not play audio.
 
@@ -77,9 +77,9 @@ Read [INSTALL.md](INSTALL.md) and [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING
 The flash task needs a factory backup. On a provisioned board with no backup it
 stops, because it cannot take one safely. Read [INSTALL.md](INSTALL.md).
 
-The firmware shows a green `spot` label.
+The firmware shows a green `bop` label.
 
-Set `SPOT_PORT` if more than one Espressif board is connected.
+Set `BOP_PORT` if more than one Espressif board is connected.
 
 ## Soak test
 

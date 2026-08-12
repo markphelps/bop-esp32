@@ -5,4 +5,4 @@
 
 #include "esp_err.h"
 
-esp_err_t spot_diagnostics_start(void);
+esp_err_t bop_diagnostics_start(void);

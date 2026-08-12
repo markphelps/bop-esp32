@@ -70,7 +70,7 @@ def inspect_bop_device(loader, table_offset, table_size, nvs_offset, nvs_size, a
     description = loader.read_flash(app_offset + 0x20, 256)
     magic, = struct.unpack_from("<L", description)
     project_name = description[48:80].split(b"\0", 1)[0].decode("ascii")
-    if magic != 0xABCD5432 or project_name != "spot":
+    if magic != 0xABCD5432 or project_name != "bop":
         raise SystemExit("The connected device is not running Bop firmware")
     return ":".join(f"{byte:02x}" for byte in loader.read_mac("BASE_MAC"))
 """

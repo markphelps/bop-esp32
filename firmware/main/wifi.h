@@ -14,10 +14,10 @@ typedef struct {
     uint32_t connects;
     uint32_t disconnects;
     uint32_t reconnect_attempts;
-} spot_wifi_status_t;
+} bop_wifi_status_t;
 
-esp_err_t spot_wifi_connect(const spot_credentials_t *credentials);
-bool spot_wifi_is_connected(void);
-void spot_wifi_get_status(spot_wifi_status_t *status);
-bool spot_wifi_wait_connected(void);
-esp_err_t spot_time_sync(void);
+esp_err_t bop_wifi_connect(const bop_credentials_t *credentials);
+bool bop_wifi_is_connected(void);
+void bop_wifi_get_status(bop_wifi_status_t *status);
+bool bop_wifi_wait_connected(void);
+esp_err_t bop_time_sync(void);

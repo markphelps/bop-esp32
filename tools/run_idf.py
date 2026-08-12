@@ -19,7 +19,7 @@ def project_root() -> Path:
 
 
 def idf_path() -> Path:
-    configured = os.environ.get("SPOT_IDF_PATH")
+    configured = os.environ.get("BOP_IDF_PATH")
     return Path(configured).expanduser() if configured else Path.home() / ".local/share/esp-idf"
 
 
@@ -40,7 +40,7 @@ def idf_arguments(arguments: list[str]) -> list[str]:
 
 
 def perf_arguments(arguments: list[str], firmware: Path) -> list[str]:
-    if os.environ.get("SPOT_PERF_MONITOR") != "1":
+    if os.environ.get("BOP_PERF_MONITOR") != "1":
         return arguments
     sdkconfig = firmware / "build-perf" / "sdkconfig"
     defaults = "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.perf.defaults"

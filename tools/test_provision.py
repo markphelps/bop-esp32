@@ -7,14 +7,42 @@
 from __future__ import annotations
 
 from contextlib import redirect_stdout
+import csv
 from io import StringIO
 from pathlib import Path
+import re
+import tempfile
 from unittest.mock import patch
 
 import provision
 
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def firmware_nvs_namespace() -> str:
+    source = (ROOT / "firmware/main/credentials.c").read_text(encoding="utf-8")
+    match = re.search(r'#define\s+BOP_NVS_NAMESPACE\s+"([^"]*)"', source)
+    assert match is not None, "credentials.c does not define BOP_NVS_NAMESPACE"
+    return match.group(1)
+
+
+def test_nvs_namespace_matches_the_firmware() -> None:
+    assert provision.NVS_NAMESPACE == firmware_nvs_namespace()
+
+
+def test_written_csv_uses_the_firmware_nvs_namespace() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "credentials.csv"
+        provision.write_nvs_csv(path, "Test WiFi", "password", "client-id", "refresh-token")
+        rows = list(csv.reader(path.read_text(encoding="utf-8").splitlines()))
+
+    # nvs_partition_gen scopes each key to the namespace row above it, so the
+    # namespace must come first and must be the only one. A second namespace
+    # row would move the keys after it out of the namespace the firmware opens.
+    assert rows[0] == ["key", "type", "encoding", "value"]
+    assert rows[1] == [firmware_nvs_namespace(), "namespace", "", ""]
+    assert [row for row in rows[2:] if row[1] == "namespace"] == []
 
 
 def test_legal_documents_are_available() -> None:
@@ -89,6 +117,8 @@ def test_temporary_credentials_are_removed_after_flashing() -> None:
 
 
 def main() -> int:
+    test_nvs_namespace_matches_the_firmware()
+    test_written_csv_uses_the_firmware_nvs_namespace()
     test_legal_documents_are_available()
     test_refusal_stops_before_authorization()
     test_acceptance_starts_authorization_after_consent()

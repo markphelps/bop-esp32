@@ -38,9 +38,9 @@ LV_FONT_DECLARE(lv_font_montserrat_bold_24);
 #define FEEDBACK_SIZE 96
 #define FEEDBACK_DURATION_MS 750
 #define ATTRIBUTION_QR_SIZE 208
-#define ATTRIBUTION_URL_CAPACITY (sizeof("https://open.spotify.com/track/") + SPOT_TRACK_ID_CAPACITY)
+#define ATTRIBUTION_URL_CAPACITY (sizeof("https://open.spotify.com/track/") + BOP_TRACK_ID_CAPACITY)
 
-static const char *TAG = "spot_ui";
+static const char *TAG = "bop_ui";
 
 typedef struct {
     lv_obj_t *screen;
@@ -60,7 +60,7 @@ typedef struct {
     lv_obj_t *attribution;
     lv_obj_t *attribution_qr;
     QueueHandle_t art_queue;
-    spot_album_art_t *active_art;
+    bop_album_art_t *active_art;
     playback_state_t state;
     int64_t state_received_us;
     uint32_t rendered_change_counter;
@@ -391,7 +391,7 @@ static void animate_swipe(int direction)
 
 static bool send_gesture_command(spotify_command_t command, uint32_t request_id)
 {
-    if (spot_spotify_enqueue_command(command, request_id)) {
+    if (bop_spotify_enqueue_command(command, request_id)) {
         return true;
     }
     ESP_LOGW(TAG, "Spotify command queue is full");
@@ -570,14 +570,14 @@ static uint32_t darken_color(uint32_t rgb)
     return (red << 16) | (green << 8) | blue;
 }
 
-static void apply_art(spot_album_art_t *art)
+static void apply_art(bop_album_art_t *art)
 {
     if (!ui.state.available || strcmp(ui.state.track_id, art->track_id) != 0) {
-        spot_album_art_free(art);
+        bop_album_art_free(art);
         return;
     }
 
-    spot_album_art_t *previous = ui.active_art;
+    bop_album_art_t *previous = ui.active_art;
     lv_image_set_src(ui.art_image, &art->image);
     int32_t width = art->image.header.w;
     int32_t height = art->image.header.h;
@@ -590,10 +590,10 @@ static void apply_art(spot_album_art_t *art)
     uint32_t background = darken_color(art->dominant_rgb);
     lv_obj_set_style_bg_color(ui.band, lv_color_hex(background), 0);
     ui.active_art = art;
-    spot_art_mark_active(art->track_id);
+    bop_art_mark_active(art->track_id);
     if (previous != NULL) {
         lv_image_cache_drop(&previous->image);
-        spot_album_art_free(previous);
+        bop_album_art_free(previous);
     }
 }
 
@@ -665,7 +665,7 @@ static void update_progress(void)
 
 static void update_connectivity(void)
 {
-    if (spot_wifi_is_connected()) {
+    if (bop_wifi_is_connected()) {
         lv_obj_add_flag(ui.offline, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_remove_flag(ui.offline, LV_OBJ_FLAG_HIDDEN);
@@ -674,7 +674,7 @@ static void update_connectivity(void)
 
 static void update_battery_care(void)
 {
-    if (!spot_power_on_battery()) {
+    if (!bop_power_on_battery()) {
         restore_normal_brightness();
         return;
     }
@@ -694,7 +694,7 @@ static void update_battery_care(void)
 static void process_command_results(void)
 {
     spotify_command_result_t result;
-    while (spot_spotify_get_command_result(&result)) {
+    while (bop_spotify_get_command_result(&result)) {
         if (result.command == SPOTIFY_COMMAND_TOGGLE
             && result.request_id != 0
             && result.accepted) {
@@ -708,14 +708,14 @@ static void ui_timer(lv_timer_t *timer)
     (void)timer;
     update_connectivity();
     update_battery_care();
-    spot_album_art_t *art = NULL;
+    bop_album_art_t *art = NULL;
     while (xQueueReceive(ui.art_queue, &art, 0) == pdTRUE) {
         apply_art(art);
     }
     process_command_results();
 
     playback_state_t snapshot = {0};
-    if (spot_spotify_get_state(&snapshot)) {
+    if (bop_spotify_get_state(&snapshot)) {
         int64_t now = esp_timer_get_time();
         bool same_snapshot = snapshot.change_counter == ui.optimistic_change_counter;
         bool optimistic_expired = ui.optimistic_toggle
@@ -735,13 +735,13 @@ static void ui_timer(lv_timer_t *timer)
     update_progress();
 }
 
-esp_err_t spot_ui_start(void)
+esp_err_t bop_ui_start(void)
 {
-    ui.art_queue = xQueueCreate(1, sizeof(spot_album_art_t *));
+    ui.art_queue = xQueueCreate(1, sizeof(bop_album_art_t *));
     if (ui.art_queue == NULL) {
         return ESP_ERR_NO_MEM;
     }
-    esp_err_t error = spot_art_pipeline_start(ui.art_queue);
+    esp_err_t error = bop_art_pipeline_start(ui.art_queue);
     if (error != ESP_OK) {
         vQueueDelete(ui.art_queue);
         ui.art_queue = NULL;

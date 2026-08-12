@@ -33,7 +33,7 @@ Font License.
 
 `mise run setup` clones ESP-IDF from GitHub at tag `v5.5.5`. It writes it
 outside this repository, to `~/.local/share/esp-idf` by default. Set
-`SPOT_IDF_PATH` to use a different path. The Apache-2.0 grant is the `LICENSE`
+`BOP_IDF_PATH` to use a different path. The Apache-2.0 grant is the `LICENSE`
 file at the root of the clone.
 
 ESP-IDF is Apache-2.0 as a whole, but it links further works under their own

@@ -12,7 +12,7 @@ import subprocess
 import sys
 
 IDF_TAG = "v5.5.5"
-MARKER = ".spot-install-version"
+MARKER = ".bop-install-version"
 
 
 def run(command: list[str], *, cwd: Path | None = None) -> None:
@@ -21,7 +21,7 @@ def run(command: list[str], *, cwd: Path | None = None) -> None:
 
 
 def idf_path() -> Path:
-    configured = os.environ.get("SPOT_IDF_PATH")
+    configured = os.environ.get("BOP_IDF_PATH")
     return Path(configured).expanduser() if configured else Path.home() / ".local/share/esp-idf"
 
 
@@ -56,7 +56,7 @@ def make_sure_checkout_is_pinned(destination: Path) -> None:
     if head != expected:
         raise RuntimeError(
             f"{destination} is at {head[:12]}, not {IDF_TAG}. "
-            "Move it or set SPOT_IDF_PATH to an empty path."
+            "Move it or set BOP_IDF_PATH to an empty path."
         )
 
     run(

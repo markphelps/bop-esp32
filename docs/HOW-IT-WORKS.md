@@ -1,4 +1,4 @@
-# How spot works
+# How Bop works
 
 ## Board and USB flashing
 
@@ -8,7 +8,7 @@ The display uses QSPI. The touch controller, AXP2101 power manager, and other lo
 
 The board uses native USB. It appears as an Espressif USB serial device when you connect a USB data cable.
 
-`mise run flash` uses `idf.py` and esptool to write the firmware through USB. The board resets after the flash. It starts `spot` after a normal power cycle.
+`mise run flash` uses `idf.py` and esptool to write the firmware through USB. The board resets after the flash. It starts Bop after a normal power cycle.
 
 If the automatic reset fails, hold BOOT while you connect USB. Then run `mise run flash` again.
 
@@ -87,7 +87,7 @@ Use the performance build for an FPS reading:
 
 The performance build sets `LV_USE_PERF_MONITOR`. LVGL shows the FPS monitor at the top left.
 
-The serial log writes a `spot_soak` line every minute. The line includes free heap, minimum free heap, free PSRAM, minimum free PSRAM, WiFi state, connections, disconnects, and reconnect attempts.
+The serial log writes a `bop_soak` line every minute. The line includes free heap, minimum free heap, free PSRAM, minimum free PSRAM, WiFi state, connections, disconnects, and reconnect attempts.
 
 Save the monitor output with the test date. Make sure that the log has no unexpected reset, WiFi reconnects after the outage, and an FPS value of 25 or more.
 

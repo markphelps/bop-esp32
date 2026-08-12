@@ -16,10 +16,10 @@
 
 #define WIFI_CONNECTED_BIT BIT0
 
-static const char *TAG = "spot_wifi";
+static const char *TAG = "bop_wifi";
 static EventGroupHandle_t connected_events;
 static portMUX_TYPE status_lock = portMUX_INITIALIZER_UNLOCKED;
-static spot_wifi_status_t status;
+static bop_wifi_status_t status;
 
 static void request_connection(bool reconnecting)
 {
@@ -63,7 +63,7 @@ static void wifi_event(void *argument, esp_event_base_t event_base, int32_t even
     }
 }
 
-esp_err_t spot_wifi_connect(const spot_credentials_t *credentials)
+esp_err_t bop_wifi_connect(const bop_credentials_t *credentials)
 {
     if (credentials == NULL || credentials->wifi_ssid[0] == '\0') {
         return ESP_ERR_INVALID_ARG;
@@ -101,17 +101,17 @@ esp_err_t spot_wifi_connect(const spot_credentials_t *credentials)
     ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &configuration), TAG, "WiFi station configuration failed");
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "WiFi start failed");
 
-    spot_wifi_wait_connected();
+    bop_wifi_wait_connected();
     return ESP_OK;
 }
 
-bool spot_wifi_is_connected(void)
+bool bop_wifi_is_connected(void)
 {
     return connected_events != NULL
         && (xEventGroupGetBits(connected_events) & WIFI_CONNECTED_BIT) != 0;
 }
 
-void spot_wifi_get_status(spot_wifi_status_t *next_status)
+void bop_wifi_get_status(bop_wifi_status_t *next_status)
 {
     if (next_status == NULL) {
         return;
@@ -119,10 +119,10 @@ void spot_wifi_get_status(spot_wifi_status_t *next_status)
     portENTER_CRITICAL(&status_lock);
     *next_status = status;
     portEXIT_CRITICAL(&status_lock);
-    next_status->connected = spot_wifi_is_connected();
+    next_status->connected = bop_wifi_is_connected();
 }
 
-bool spot_wifi_wait_connected(void)
+bool bop_wifi_wait_connected(void)
 {
     if (connected_events == NULL) {
         return false;
@@ -132,7 +132,7 @@ bool spot_wifi_wait_connected(void)
     return (bits & WIFI_CONNECTED_BIT) != 0;
 }
 
-esp_err_t spot_time_sync(void)
+esp_err_t bop_time_sync(void)
 {
     ESP_LOGI(TAG, "Synchronizing time");
     esp_sntp_config_t configuration = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");

@@ -51,7 +51,7 @@ def test_run_idf_cancels_child() -> None:
         fake_idf.write_text("#!/bin/sh\ntrap 'exit 130' INT\nwhile :; do sleep 1; done\n", encoding="utf-8")
         fake_idf.chmod(0o755)
 
-        environment = os.environ | {"FAKE_BIN": str(bin_dir), "SPOT_IDF_PATH": str(root)}
+        environment = os.environ | {"FAKE_BIN": str(bin_dir), "BOP_IDF_PATH": str(root)}
         process = subprocess.Popen(
             [sys.executable, "tools/run_idf.py", "clean"],
             cwd=ROOT,

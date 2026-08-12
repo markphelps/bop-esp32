@@ -7,5 +7,5 @@
 
 #include "esp_err.h"
 
-esp_err_t spot_power_start(void);
-bool spot_power_on_battery(void);
+esp_err_t bop_power_start(void);
+bool bop_power_on_battery(void);

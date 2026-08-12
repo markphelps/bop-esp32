@@ -36,6 +36,11 @@ CALLBACK_PATH = "/callback"
 DEFAULT_CALLBACK_PORT = 43821
 NVS_OFFSET = "0x9000"
 NVS_SIZE = "0x6000"
+# The firmware opens this namespace in firmware/main/credentials.c
+# (BOP_NVS_NAMESPACE). A change to one side without the other leaves a
+# provisioned board reading an empty namespace and showing the provisioning
+# screen. test_provision.py holds the two sides together.
+NVS_NAMESPACE = "bop"
 LEGAL_DOCUMENTS = ("EULA.md", "PRIVACY.md")
 LEGAL_AGREEMENT_PROMPT = "Type I AGREE to accept EULA.md and PRIVACY.md before Spotify authorization: "
 
@@ -148,7 +153,7 @@ class CallbackHandler(BaseHTTPRequestHandler):
 
         successful = "code" in server.result
         message = "Authorization complete. You can close this page." if successful else "Authorization failed. Return to the terminal."
-        body = f"<!doctype html><meta charset=utf-8><title>spot</title><p>{message}</p>".encode()
+        body = f"<!doctype html><meta charset=utf-8><title>bop</title><p>{message}</p>".encode()
         self.send_response(HTTPStatus.OK if successful else HTTPStatus.BAD_REQUEST)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -180,7 +185,7 @@ def authorize(client_id: str, redirect_uri: str, port: int) -> str:
     server.expected_state = state
     server.timeout = 1
     print(f"Open this URL if the browser does not open:\n{authorization_url}\n")
-    if os.environ.get("SPOT_NO_BROWSER") != "1":
+    if os.environ.get("BOP_NO_BROWSER") != "1":
         webbrowser.open(authorization_url)
 
     deadline = time.monotonic() + 300
@@ -234,7 +239,7 @@ def write_nvs_csv(path: Path, ssid: str, password: str, client_id: str, refresh_
     with path.open("w", newline="", encoding="utf-8") as output:
         writer = csv.writer(output)
         writer.writerow(["key", "type", "encoding", "value"])
-        writer.writerow(["spot", "namespace", "", ""])
+        writer.writerow([NVS_NAMESPACE, "namespace", "", ""])
         writer.writerow(["wifi_ssid", "data", "string", ssid])
         writer.writerow(["wifi_pass", "data", "string", password])
         writer.writerow(["client_id", "data", "string", client_id])
@@ -243,7 +248,7 @@ def write_nvs_csv(path: Path, ssid: str, password: str, client_id: str, refresh_
 
 
 def idf_path() -> Path:
-    configured = os.environ.get("SPOT_IDF_PATH")
+    configured = os.environ.get("BOP_IDF_PATH")
     return Path(configured).expanduser() if configured else Path.home() / ".local/share/esp-idf"
 
 
@@ -285,23 +290,23 @@ def flash_nvs(image_path: Path) -> None:
 
 def main() -> int:
     try:
-        callback_port = int(os.environ.get("SPOT_OAUTH_PORT", str(DEFAULT_CALLBACK_PORT)))
+        callback_port = int(os.environ.get("BOP_OAUTH_PORT", str(DEFAULT_CALLBACK_PORT)))
         if not 1 <= callback_port <= 65535:
-            raise ValueError("SPOT_OAUTH_PORT must be from 1 through 65535")
+            raise ValueError("BOP_OAUTH_PORT must be from 1 through 65535")
         redirect_uri = f"http://{CALLBACK_HOST}:{callback_port}{CALLBACK_PATH}"
         require_legal_agreement()
         print_dashboard_steps(redirect_uri)
 
-        ssid = prompt_value("WiFi SSID", os.environ.get("SPOT_WIFI_SSID", current_ssid()))
+        ssid = prompt_value("WiFi SSID", os.environ.get("BOP_WIFI_SSID", current_ssid()))
         password = prompt_value("WiFi password (input is hidden)", secret=True)
-        client_id = prompt_value("Spotify Client ID", os.environ.get("SPOT_CLIENT_ID", ""))
+        client_id = prompt_value("Spotify Client ID", os.environ.get("BOP_CLIENT_ID", ""))
         make_sure_value_fits("WiFi SSID", ssid, 32)
         make_sure_value_fits("WiFi password", password, 64, allow_empty=True)
         make_sure_value_fits("Spotify Client ID", client_id, 64)
 
         refresh_token = authorize(client_id, redirect_uri, callback_port)
         make_sure_value_fits("Spotify refresh token", refresh_token, 1023)
-        with tempfile.TemporaryDirectory(prefix="spot-provision-") as directory:
+        with tempfile.TemporaryDirectory(prefix="bop-provision-") as directory:
             temporary = Path(directory)
             csv_path = temporary / "credentials.csv"
             image_path = temporary / "nvs.bin"

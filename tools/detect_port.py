@@ -16,7 +16,7 @@ ESPRESSIF_VID = 0x303A
 
 
 def detect_port() -> str:
-    override = os.environ.get("SPOT_PORT")
+    override = os.environ.get("BOP_PORT")
 
     from serial.tools import list_ports
 
@@ -27,14 +27,14 @@ def detect_port() -> str:
     if override:
         if any(port.device == override for port in ports):
             return override
-        raise RuntimeError("SPOT_PORT is not a connected Espressif USB serial port")
+        raise RuntimeError("BOP_PORT is not a connected Espressif USB serial port")
     if not ports:
         raise RuntimeError(
-            "No Espressif USB serial port was found. Connect the device or set SPOT_PORT."
+            "No Espressif USB serial port was found. Connect the device or set BOP_PORT."
         )
     if len(ports) > 1:
         names = ", ".join(port.device for port in ports)
-        raise RuntimeError(f"More than one Espressif USB serial port was found: {names}. Set SPOT_PORT.")
+        raise RuntimeError(f"More than one Espressif USB serial port was found: {names}. Set BOP_PORT.")
     return ports[0].device
 
 
@@ -73,10 +73,10 @@ def esptool_python() -> Path | None:
 
 def reexec_with_esptool_python() -> None:
     python = esptool_python()
-    if python is None or os.environ.get("SPOT_PYSERIAL_REEXEC") == "1":
+    if python is None or os.environ.get("BOP_PYSERIAL_REEXEC") == "1":
         raise RuntimeError("pyserial is unavailable. Run `mise install` to install esptool.")
     environment = os.environ.copy()
-    environment["SPOT_PYSERIAL_REEXEC"] = "1"
+    environment["BOP_PYSERIAL_REEXEC"] = "1"
     os.execve(str(python), [str(python), str(Path(__file__).resolve())], environment)
 
 

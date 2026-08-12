@@ -14,9 +14,11 @@ The repository holds two halves:
 - `tools/` — host-side Python that installs the toolchain, backs up flash,
   provisions credentials, and runs the host checks. `mise` starts every tool.
 
-Names differ by layer. The product is "Bop", the repository is `bop-esp32`, and
-the ESP-IDF project, every C symbol, and every environment variable use `spot`
-or `SPOT_`. Keep the `spot` prefix in firmware and tool code.
+One name runs through every layer. The product is "Bop", the repository is
+`bop-esp32`, the ESP-IDF project is `bop`, and every environment variable
+starts with `BOP_`. Public firmware functions use the `bop_` prefix, and the
+capacity macros use `BOP_`. The name Spotify is the one exception, and it stays
+wherever it means Spotify.
 
 ## Commands
 
@@ -34,12 +36,12 @@ Run one host check alone with `python tools/test_provision.py`. Each check is a
 plain script with a `main()` function and bare `assert` statements. There is no
 pytest, and there are no third-party test dependencies.
 
-The performance build is a second build directory, not a flag. `SPOT_PERF_MONITOR=1`
+The performance build is a second build directory, not a flag. `BOP_PERF_MONITOR=1`
 makes `tools/run_idf.py` add `sdkconfig.perf.defaults` and use `firmware/build-perf`:
 use `mise run build-perf`, `flash-perf`, and `monitor-perf`.
 
-Set `SPOT_PORT` when more than one Espressif board is connected. Set
-`SPOT_IDF_PATH` to move the ESP-IDF checkout away from `~/.local/share/esp-idf`.
+Set `BOP_PORT` when more than one Espressif board is connected. Set
+`BOP_IDF_PATH` to move the ESP-IDF checkout away from `~/.local/share/esp-idf`.
 
 The firmware needs the real board. There is no host build and no emulator, so
 `mise run test-host` and a careful read are the only checks available without
@@ -60,19 +62,19 @@ Work is divided across the two cores:
 Data moves one way. The Spotify task polls `currently-playing` every two
 seconds and publishes a `playback_state_t` snapshot behind a mutex. Each real
 change increments `change_counter`. The UI timer copies that snapshot with
-`spot_spotify_get_state` and redraws only when the counter moves.
+`bop_spotify_get_state` and redraws only when the counter moves.
 
 Commands move back through queues, never through direct calls. A gesture calls
-`spot_spotify_enqueue_command`, the client task sends the request, and the
+`bop_spotify_enqueue_command`, the client task sends the request, and the
 result returns on a second queue that `process_command_results` drains. The UI
 shows the new play state immediately, then the next snapshot corrects it. The
 `optimistic_*` fields in `ui_context_t` hold that short window.
 
 The art pipeline (`ui/art.c`) is a third producer. It downloads the JPEG into
 PSRAM, decodes it with `esp_jpeg`, scales it to 368 pixels, and averages the
-pixels for the background color. It passes one `spot_album_art_t *` through a
+pixels for the background color. It passes one `bop_album_art_t *` through a
 one-slot queue. The UI owns that pointer after it arrives and frees the old one
-with `spot_album_art_free`.
+with `bop_album_art_free`.
 
 Rules that the structure depends on:
 
@@ -90,7 +92,7 @@ Rules that the structure depends on:
 ## Credentials and secrets
 
 The four NVS keys are `wifi_ssid`, `wifi_pass`, `client_id`, and `refresh_tok`
-in the `spot` namespace. The firmware names them in
+in the `bop` namespace. The firmware names them in
 `firmware/main/credentials.c`, and the host tools name them in
 `tools/device.py` as `CREDENTIAL_KEYS`. A change to one list needs the same
 change in the other, or the host safety checks stop finding credentials.
@@ -136,18 +138,20 @@ esptool behavior that the code depends on. Read them before you edit a string.
 ## Conventions
 
 C code uses full words for identifiers, `static` for everything that is not in a
-header, `esp_err_t` returns with an `error` variable, and a `spot_` prefix on
+header, `esp_err_t` returns with an `error` variable, and a `bop_` prefix on
 public functions. Comments explain why, not what.
 
 Python code uses `from __future__ import annotations`, the standard library
 only, `RuntimeError` messages that name the fix, and exit code 130 on
 `KeyboardInterrupt`.
 
-Three host checks assert on the text of the C sources:
-`test_display_recovery.py` reads `app_main.c`, and `test_playback_feedback.py`
-reads `ui.c` and `spotify.c`. An edit to those files can turn the checks red
-even when the firmware is correct. Read the failing assertion, then decide
-whether the check or the code is wrong.
+Some host checks assert on the text of the firmware sources.
+`test_display_recovery.py` reads `app_main.c`. `test_playback_feedback.py`
+reads `ui.c` and `spotify.c`. `test_deprovision.py` reads `app_main.c`,
+`firmware/CMakeLists.txt`, and `firmware/partitions.csv`. `test_provision.py`
+reads `credentials.c`. An edit to those files can turn the checks red even when
+the firmware is correct. Read the failing assertion, then decide whether the
+check or the code is wrong.
 
 Every new file needs an SPDX header, or an entry in `REUSE.toml` when a header
 is impossible. `mise run licenses` is the check.

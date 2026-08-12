@@ -22,10 +22,10 @@
 #define ART_ACCEPT_DELAY_MS 2000
 #define ART_TASK_CORE 0
 
-static const char *TAG = "spot_art";
+static const char *TAG = "bop_art";
 static QueueHandle_t art_result_queue;
 static SemaphoreHandle_t art_cache_mutex;
-static char active_track_id[SPOT_TRACK_ID_CAPACITY];
+static char active_track_id[BOP_TRACK_ID_CAPACITY];
 
 typedef struct {
     uint8_t *data;
@@ -243,7 +243,7 @@ static esp_err_t decode_jpeg(
     const uint8_t *jpeg,
     size_t jpeg_size,
     const char *track_id,
-    spot_album_art_t **decoded_art)
+    bop_album_art_t **decoded_art)
 {
     *decoded_art = NULL;
     uint32_t source_width = 0;
@@ -282,7 +282,7 @@ static esp_err_t decode_jpeg(
         return ESP_ERR_INVALID_RESPONSE;
     }
 
-    spot_album_art_t *art = calloc(1, sizeof(*art));
+    bop_album_art_t *art = calloc(1, sizeof(*art));
     if (art == NULL) {
         free(decoded_pixels);
         return ESP_ERR_NO_MEM;
@@ -322,7 +322,7 @@ static esp_err_t decode_jpeg(
     return ESP_OK;
 }
 
-void spot_album_art_free(spot_album_art_t *art)
+void bop_album_art_free(bop_album_art_t *art)
 {
     if (art == NULL) {
         return;
@@ -331,14 +331,14 @@ void spot_album_art_free(spot_album_art_t *art)
     free(art);
 }
 
-static void publish_art(spot_album_art_t *art)
+static void publish_art(bop_album_art_t *art)
 {
-    spot_album_art_t *stale = NULL;
+    bop_album_art_t *stale = NULL;
     if (xQueueReceive(art_result_queue, &stale, 0) == pdTRUE) {
-        spot_album_art_free(stale);
+        bop_album_art_free(stale);
     }
     if (xQueueSend(art_result_queue, &art, 0) != pdTRUE) {
-        spot_album_art_free(art);
+        bop_album_art_free(art);
     }
 }
 
@@ -352,7 +352,7 @@ static bool art_is_active(const char *track_id)
     return active;
 }
 
-void spot_art_mark_active(const char *track_id)
+void bop_art_mark_active(const char *track_id)
 {
     if (track_id == NULL || art_cache_mutex == NULL) {
         return;
@@ -366,13 +366,13 @@ void spot_art_mark_active(const char *track_id)
 static void art_task(void *argument)
 {
     (void)argument;
-    char attempted_track[SPOT_TRACK_ID_CAPACITY] = {0};
+    char attempted_track[BOP_TRACK_ID_CAPACITY] = {0};
     int64_t retry_after = 0;
 
     for (;;) {
         playback_state_t state = {0};
         int64_t now = esp_timer_get_time() / 1000;
-        bool have_track = spot_spotify_get_state(&state)
+        bool have_track = bop_spotify_get_state(&state)
             && state.available
             && state.track_id[0] != '\0'
             && state.album_art_url[0] != '\0';
@@ -389,7 +389,7 @@ static void art_task(void *argument)
         uint8_t *jpeg = NULL;
         size_t jpeg_size = 0;
         esp_err_t error = download_jpeg(state.album_art_url, &jpeg, &jpeg_size);
-        spot_album_art_t *art = NULL;
+        bop_album_art_t *art = NULL;
         if (error == ESP_OK) {
             error = decode_jpeg(jpeg, jpeg_size, state.track_id, &art);
         }
@@ -401,9 +401,9 @@ static void art_task(void *argument)
         }
 
         playback_state_t latest = {0};
-        if (!spot_spotify_get_state(&latest)
+        if (!bop_spotify_get_state(&latest)
             || strcmp(latest.track_id, art->track_id) != 0) {
-            spot_album_art_free(art);
+            bop_album_art_free(art);
             continue;
         }
         retry_after = esp_timer_get_time() / 1000 + ART_ACCEPT_DELAY_MS;
@@ -411,7 +411,7 @@ static void art_task(void *argument)
     }
 }
 
-esp_err_t spot_art_pipeline_start(QueueHandle_t result_queue)
+esp_err_t bop_art_pipeline_start(QueueHandle_t result_queue)
 {
     if (result_queue == NULL || art_result_queue != NULL) {
         return ESP_ERR_INVALID_STATE;

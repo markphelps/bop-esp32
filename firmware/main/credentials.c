@@ -9,7 +9,7 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 
-#define SPOT_NVS_NAMESPACE "spot"
+#define BOP_NVS_NAMESPACE "bop"
 
 static esp_err_t load_string(nvs_handle_t handle, const char *key, char *output, size_t capacity)
 {
@@ -24,12 +24,12 @@ static esp_err_t load_string(nvs_handle_t handle, const char *key, char *output,
     return nvs_get_str(handle, key, output, &required);
 }
 
-esp_err_t spot_credentials_init(void)
+esp_err_t bop_credentials_init(void)
 {
     return nvs_flash_init();
 }
 
-esp_err_t spot_credentials_load(spot_credentials_t *credentials)
+esp_err_t bop_credentials_load(bop_credentials_t *credentials)
 {
     if (credentials == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -37,7 +37,7 @@ esp_err_t spot_credentials_load(spot_credentials_t *credentials)
     mbedtls_platform_zeroize(credentials, sizeof(*credentials));
 
     nvs_handle_t handle;
-    esp_err_t error = nvs_open(SPOT_NVS_NAMESPACE, NVS_READONLY, &handle);
+    esp_err_t error = nvs_open(BOP_NVS_NAMESPACE, NVS_READONLY, &handle);
     if (error != ESP_OK) {
         return error;
     }
@@ -62,14 +62,14 @@ esp_err_t spot_credentials_load(spot_credentials_t *credentials)
     return error;
 }
 
-esp_err_t spot_credentials_store_refresh_token(const char *refresh_token)
+esp_err_t bop_credentials_store_refresh_token(const char *refresh_token)
 {
     if (refresh_token == NULL || refresh_token[0] == '\0') {
         return ESP_ERR_INVALID_ARG;
     }
 
     nvs_handle_t handle;
-    esp_err_t error = nvs_open(SPOT_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    esp_err_t error = nvs_open(BOP_NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (error != ESP_OK) {
         return error;
     }

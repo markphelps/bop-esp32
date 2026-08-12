@@ -26,8 +26,8 @@
 #define DISPLAY_BUFFER_ROWS 100
 #define CO5300_QSPI_NOP 0x02000000
 
-static const char *TAG = "spot";
-static spot_credentials_t credentials;
+static const char *TAG = "bop";
+static bop_credentials_t credentials;
 static esp_lcd_panel_handle_t display_panel;
 static esp_lcd_panel_io_handle_t display_panel_io;
 
@@ -47,13 +47,13 @@ static void create_placeholder(const char *text)
 
 static void startup_task(void *argument)
 {
-    spot_credentials_t *configured_credentials = argument;
-    esp_err_t error = spot_wifi_connect(configured_credentials);
+    bop_credentials_t *configured_credentials = argument;
+    esp_err_t error = bop_wifi_connect(configured_credentials);
     if (error == ESP_OK) {
-        error = spot_time_sync();
+        error = bop_time_sync();
     }
     if (error == ESP_OK) {
-        error = spot_spotify_start(configured_credentials);
+        error = bop_spotify_start(configured_credentials);
     }
     if (error != ESP_OK) {
         ESP_LOGE(TAG, "Startup failed: %s", esp_err_to_name(error));
@@ -190,14 +190,14 @@ void app_main(void)
         return;
     }
     ESP_ERROR_CHECK(bsp_display_brightness_set(85));
-    esp_err_t power_error = spot_power_start();
+    esp_err_t power_error = bop_power_start();
     if (power_error != ESP_OK) {
         ESP_LOGW(TAG, "Battery monitor is unavailable: %s", esp_err_to_name(power_error));
     }
 
-    esp_err_t credentials_error = spot_credentials_init();
+    esp_err_t credentials_error = bop_credentials_init();
     if (credentials_error == ESP_OK) {
-        credentials_error = spot_credentials_load(&credentials);
+        credentials_error = bop_credentials_load(&credentials);
     }
     const bool provisioned = credentials_error == ESP_OK;
 
@@ -207,7 +207,7 @@ void app_main(void)
     }
     esp_err_t ui_error = ESP_OK;
     if (provisioned) {
-        ui_error = spot_ui_start();
+        ui_error = bop_ui_start();
     } else {
         create_placeholder("run:\nmise run provision");
     }
@@ -221,12 +221,12 @@ void app_main(void)
         ESP_LOGW(TAG, "Provisioning values are missing: %s", esp_err_to_name(credentials_error));
         return;
     }
-    esp_err_t diagnostics_error = spot_diagnostics_start();
+    esp_err_t diagnostics_error = bop_diagnostics_start();
     if (diagnostics_error != ESP_OK) {
         ESP_LOGW(TAG, "Soak diagnostics did not start: %s", esp_err_to_name(diagnostics_error));
     }
     if (xTaskCreatePinnedToCore(
-            startup_task, "spot_startup", 16384, &credentials, 5, NULL, SPOTIFY_TASK_CORE)
+            startup_task, "bop_startup", 16384, &credentials, 5, NULL, SPOTIFY_TASK_CORE)
         != pdPASS) {
         ESP_LOGE(TAG, "Startup task creation failed");
     }
