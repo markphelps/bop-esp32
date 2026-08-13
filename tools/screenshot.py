@@ -77,15 +77,26 @@ def serial_factory(arguments: list[str]) -> Callable[[], SerialConnection]:
 
 
 def open_serial(factory: Callable[[], SerialConnection]) -> SerialConnection:
-    """Open the Bop port without asserting reset control signals."""
+    """Open the Bop port without a reset through the DTR and RTS lines.
+
+    The USB-Serial-JTAG controller resets the chip when the lines reach
+    DTR low with RTS high. The operating system asserts both lines during
+    open, and pyserial applies a stored DTR value before a stored RTS
+    value. A preset low DTR therefore moves the lines through the reset
+    state, and the board reboots on every open. Keep both lines high
+    through open, then release RTS before DTR, so the reset state never
+    occurs.
+    """
     connection = factory()
-    connection.dtr = False
-    connection.rts = False
+    connection.dtr = True
+    connection.rts = True
     try:
         connection.port = detect_port.detect_port()
         connection.baudrate = 115200
         connection.timeout = 1
         connection.open()
+        connection.rts = False
+        connection.dtr = False
     except BaseException:
         connection.close()
         raise

@@ -233,7 +233,7 @@ def test_device_error_frame_never_creates_an_image() -> None:
         assert serial.events[-1] == "close"
 
 
-def test_opening_clears_reset_signals_before_the_port() -> None:
+def test_opening_never_reaches_the_reset_line_state() -> None:
     serial = FakeSerial([frame()])
     assignments: list[tuple[str, object]] = []
     original = FakeSerial.__setattr__
@@ -250,7 +250,13 @@ def test_opening_clears_reset_signals_before_the_port() -> None:
             patch.object(screenshot.detect_port, "detect_port", return_value="/dev/usb"),
         ):
             screenshot.screenshot(output, lambda: serial)
-    assert assignments[-3:] == [("dtr", False), ("rts", False), ("port", "/dev/usb")]
+    assert assignments == [
+        ("dtr", True),
+        ("rts", True),
+        ("port", "/dev/usb"),
+        ("rts", False),
+        ("dtr", False),
+    ]
     assert serial.events[:3] == ["open", "reset", "write:s"]
     assert serial.events[-1] == "close"
 
@@ -335,7 +341,7 @@ def main() -> int:
     test_not_ready_response_is_distinct_from_other_device_errors()
     test_not_ready_response_is_retried()
     test_device_error_frame_never_creates_an_image()
-    test_opening_clears_reset_signals_before_the_port()
+    test_opening_never_reaches_the_reset_line_state()
     test_png_has_correct_dimensions_and_rgb_pixels()
     test_destination_refusal_and_partial_write_cleanup()
     test_main_requires_one_new_output_path()
