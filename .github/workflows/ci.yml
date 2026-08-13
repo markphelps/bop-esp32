@@ -19,8 +19,12 @@ name: CI
 
 on:
   pull_request:
+    paths-ignore:
+      - "**/*.md"
   push:
     branches: [main]
+    paths-ignore:
+      - "**/*.md"
 
 # Read-only by default. No job writes to the repository or to a package.
 permissions:
@@ -45,7 +49,10 @@ jobs:
     runs-on: ubuntu-latest
     # The release in the comment must stay equal to IDF_TAG in
     # tools/setup_idf.py. Nothing checks that for you.
-    container: espressif/idf@sha256:a9231d0697ab8f7517cc072e93b7c83e04907bfbfba80b6440d7dbbf90665cf2 # v5.5.5
+    # v5.5.5
+    container:
+      image: >-
+        espressif/idf@sha256:a9231d0697ab8f7517cc072e93b7c83e04907bfbfba80b6440d7dbbf90665cf2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
