@@ -24,7 +24,9 @@ WARNING = """\
 A restore overwrites all 16 MB of flash. It replaces the firmware and every
 value the device holds, and you cannot undo it.
 
-Run `mise run deprovision` first, so that Spotify stops trusting this device.\
+Remove Bop access from Spotify before you restore. If the Bop firmware starts,
+run `mise run deprovision`. Otherwise, remove Bop access manually at
+https://www.spotify.com/account/apps/.\
 """
 
 

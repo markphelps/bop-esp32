@@ -77,11 +77,15 @@ The command erases the Bop credential partition. It reads the partition after th
 
 CAUTION: A restore overwrites all flash contents. You cannot undo this operation.
 
-1. If Bop still has credentials, run `mise run deprovision` first.
-2. Connect the board with a USB data cable.
-3. Run `mise run restore`.
-4. Read the image path, USB port, and MAC address.
-5. Type `RESTORE`, followed by the shown MAC address.
+1. Remove Bop access from <https://www.spotify.com/account/apps/>.
+2. If the Bop firmware starts, run `mise run deprovision` first.
+3. Connect the board with a USB data cable.
+4. Run `mise run restore`.
+5. Read the image path, USB port, and MAC address.
+6. Type `RESTORE`, followed by the shown MAC address.
+
+If Bop does not start, do not run `mise run deprovision`. Use the Spotify page to
+remove access. Then run `mise run restore` with the valid backup.
 
 A backup made before your first flash restores the shipped board state. A backup made after deprovisioning restores Bop with erased credentials. It does not restore the shipped firmware.
 
@@ -91,6 +95,6 @@ A backup made before your first flash restores the shipped board state. A backup
 2. Press and hold the BOOT button.
 3. Connect the USB cable.
 4. Release the BOOT button.
-5. Run `mise run flash`.
+5. Run `mise run flash`, or `mise run restore` if the firmware cannot start.
 
 Read [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) if a command stops.

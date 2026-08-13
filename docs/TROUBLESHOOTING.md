@@ -123,10 +123,14 @@ log. Do not share credentials, refresh tokens, WiFi passwords, or flash images.
 Use `mise run restore` only with `backups/factory.bin` and its SHA-256 file.
 The command refuses an invalid image or an image with Bop credential keys.
 
-1. If the board has credentials, run `mise run deprovision` first.
-2. Connect the board with a USB data cable.
-3. Run `mise run restore`.
-4. Type `RESTORE`, followed by the shown MAC address, exactly.
+1. Remove Bop access from <https://www.spotify.com/account/apps/>.
+2. If the Bop firmware starts, run `mise run deprovision` first.
+3. Connect the board with a USB data cable.
+4. Run `mise run restore`.
+5. Type `RESTORE`, followed by the shown MAC address, exactly.
+
+If Bop does not start, do not run `mise run deprovision`. Use the Spotify page to
+remove access. Then run `mise run restore` with the valid backup.
 
 CAUTION: A restore overwrites all flash contents. You cannot undo this action.
 
