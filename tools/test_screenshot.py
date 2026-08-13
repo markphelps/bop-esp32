@@ -128,26 +128,27 @@ def test_firmware_uses_bounded_serial_writes() -> None:
     assert "usb_serial_jtag_write_bytes(source + offset, write_size, portMAX_DELAY)" in writer
 
 
-def test_screenshot_task_refreshes_the_current_display() -> None:
+def test_screenshot_refresh_runs_in_the_lvgl_task() -> None:
     source = (ROOT / "firmware/main/screenshot.c").read_text(encoding="utf-8")
-    refresh_start = source.index("static void refresh_mirror")
-    refresh_end = source.index("static void screenshot_task", refresh_start)
-    refresh = source[refresh_start:refresh_end]
+    timer_start = source.index("static void refresh_timer")
+    timer_end = source.index("static bool request_refresh", timer_start)
+    timer = source[timer_start:timer_end]
     task_start = source.index("static void screenshot_task")
     task_end = source.index("esp_err_t bop_screenshot_init", task_start)
     task = source[task_start:task_end]
-    assert "#define BOP_SCREENSHOT_TASK_STACK_SIZE 8192U" in source
-    assert "lv_refr_now(display);" in refresh
-    assert "bsp_display_lock(0)" in refresh
-    assert "refresh_mirror(display);" in task
-    assert task.index("refresh_mirror(display);") < task.index("send_screenshot();")
+    assert "lv_obj_invalidate(lv_screen_active());" in timer
+    assert "ulTaskNotifyTake" in source
+    assert "xTaskNotifyGive(screenshot_task_handle);" in source
+    assert "request_refresh()" in task
+    assert task.index("request_refresh()") < task.index("send_screenshot();")
+    assert "lv_refr_now" not in source
 
 
-def test_initial_refresh_starts_after_the_main_task_unlocks_lvgl() -> None:
+def test_refresh_timer_is_created_before_the_main_task_unlocks_lvgl() -> None:
     source = (ROOT / "firmware/main/app_main.c").read_text(encoding="utf-8")
     start = source.index("void app_main(void)")
     main = source[start:]
-    assert main.index("bsp_display_unlock();") < main.index("bop_screenshot_start(display)")
+    assert main.index("bop_screenshot_start(display)") < main.index("bsp_display_unlock();")
     assert main.index("bop_screenshot_start(display)") < main.index("if (!provisioned) {")
 
 
@@ -324,8 +325,8 @@ def test_main_requires_one_new_output_path() -> None:
 
 def main() -> int:
     test_firmware_uses_bounded_serial_writes()
-    test_screenshot_task_refreshes_the_current_display()
-    test_initial_refresh_starts_after_the_main_task_unlocks_lvgl()
+    test_screenshot_refresh_runs_in_the_lvgl_task()
+    test_refresh_timer_is_created_before_the_main_task_unlocks_lvgl()
     test_fragmented_frame_and_split_magic()
     test_log_magic_before_a_frame_is_skipped()
     test_preheader_limit()

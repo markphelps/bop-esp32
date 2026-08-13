@@ -11,3 +11,4 @@
 esp_err_t bop_screenshot_init(void);
 esp_err_t bop_screenshot_start(lv_display_t *display);
 void bop_screenshot_mirror_area(const lv_area_t *area, const uint8_t *pixels);
+void bop_screenshot_refresh_in_ui_task(void);

@@ -7,7 +7,6 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "bsp/esp32_s3_touch_amoled_1_8.h"
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
 #include "esp_crc.h"
@@ -32,7 +31,9 @@
 #define BOP_SCREENSHOT_PIXEL_FORMAT_RGB565_BE 1U
 #define BOP_SCREENSHOT_SERIAL_BUFFER_SIZE 4096U
 #define BOP_SCREENSHOT_SERIAL_WRITE_SIZE 1024U
-#define BOP_SCREENSHOT_TASK_STACK_SIZE 8192U
+#define BOP_SCREENSHOT_REFRESH_TIMER_MS 10U
+#define BOP_SCREENSHOT_REFRESH_TIMEOUT_MS 1000U
+#define BOP_SCREENSHOT_TASK_STACK_SIZE 4096U
 #define BOP_SCREENSHOT_TASK_CORE 0
 
 static const char *TAG = "screenshot";
@@ -41,7 +42,9 @@ static uint8_t *staging_buffer;
 static SemaphoreHandle_t mirror_mutex;
 static SemaphoreHandle_t serial_output_mutex;
 static vprintf_like_t original_vprintf;
+static TaskHandle_t screenshot_task_handle;
 static bool mirror_ready;
+static bool refresh_requested;
 
 static int serial_log_vprintf(const char *format, va_list arguments)
 {
@@ -157,35 +160,48 @@ static void render_event(lv_event_t *event)
     if (lv_event_get_code(event) == LV_EVENT_RENDER_START) {
         xSemaphoreTakeRecursive(mirror_mutex, portMAX_DELAY);
     } else if (lv_event_get_code(event) == LV_EVENT_RENDER_READY) {
+        if (refresh_requested) {
+            mirror_ready = true;
+            refresh_requested = false;
+            xTaskNotifyGive(screenshot_task_handle);
+        }
         xSemaphoreGiveRecursive(mirror_mutex);
     }
 }
 
-static void refresh_mirror(lv_display_t *display)
+static void refresh_timer(lv_timer_t *timer)
 {
-    if (!bsp_display_lock(0)) {
-        ESP_LOGW(TAG, "LVGL lock failed during screenshot refresh");
-        return;
-    }
-    lv_obj_invalidate(lv_screen_active());
-    lv_refr_now(display);
+    (void)timer;
     xSemaphoreTakeRecursive(mirror_mutex, portMAX_DELAY);
-    mirror_ready = true;
+    bool requested = refresh_requested;
     xSemaphoreGiveRecursive(mirror_mutex);
-    bsp_display_unlock();
+    if (requested) {
+        lv_obj_invalidate(lv_screen_active());
+    }
+}
+
+static bool request_refresh(void)
+{
+    xSemaphoreTakeRecursive(mirror_mutex, portMAX_DELAY);
+    mirror_ready = false;
+    refresh_requested = true;
+    xSemaphoreGiveRecursive(mirror_mutex);
+    return ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(BOP_SCREENSHOT_REFRESH_TIMEOUT_MS)) != 0;
 }
 
 static void screenshot_task(void *argument)
 {
-    lv_display_t *display = argument;
-    refresh_mirror(display);
+    (void)argument;
+    screenshot_task_handle = xTaskGetCurrentTaskHandle();
     for (;;) {
         uint8_t input;
         if (usb_serial_jtag_read_bytes(&input, 1, portMAX_DELAY) != 1) {
             continue;
         }
         if (input == 's') {
-            refresh_mirror(display);
+            if (!request_refresh()) {
+                ESP_LOGW(TAG, "Screenshot refresh did not finish");
+            }
             send_screenshot();
         } else {
             handle_spotify_command(input);
@@ -235,17 +251,17 @@ esp_err_t bop_screenshot_start(lv_display_t *display)
         return ESP_ERR_INVALID_ARG;
     }
     if (mirror_buffer != NULL && staging_buffer != NULL) {
-        xSemaphoreTakeRecursive(mirror_mutex, portMAX_DELAY);
-        mirror_ready = false;
-        xSemaphoreGiveRecursive(mirror_mutex);
         lv_display_add_event_cb(display, render_event, LV_EVENT_RENDER_START, NULL);
         lv_display_add_event_cb(display, render_event, LV_EVENT_RENDER_READY, NULL);
+        if (lv_timer_create(refresh_timer, BOP_SCREENSHOT_REFRESH_TIMER_MS, NULL) == NULL) {
+            return ESP_ERR_NO_MEM;
+        }
     }
     if (xTaskCreatePinnedToCore(
             screenshot_task,
             "bop_screenshot",
             BOP_SCREENSHOT_TASK_STACK_SIZE,
-            display,
+            NULL,
             2,
             NULL,
             BOP_SCREENSHOT_TASK_CORE)
