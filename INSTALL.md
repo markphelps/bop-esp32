@@ -1,107 +1,96 @@
 # Install Bop
 
-Bop is source software for personal experimentation. It does not include a Spotify client ID or a firmware binary.
+Bop is source software for personal experimentation. It includes no firmware binary and no shared Spotify Client ID.
 
-The hardware installation process is tested on macOS. The host tools support Windows, but the Windows hardware process is not tested.
+Use this procedure on macOS. Bop hardware installation is tested on macOS. Linux builds the firmware in CI. Windows host tools are portable, but Windows hardware installation is untested.
 
-## Install the tools
+## Before you start
 
-1. Install [mise](https://mise.jdx.dev/).
-2. Connect the board with a USB data cable.
-3. Run `mise install`.
-4. Run `mise run backup` before you provision the board.
-5. Run `mise run provision` to authorize Spotify and save the device credentials.
-6. Run `mise run flash` to flash the firmware.
+You need a Waveshare ESP32-S3 Touch AMOLED 1.8 board and a USB data cable.
 
-Read [PRIVACY.md](PRIVACY.md) and [EULA.md](EULA.md) before you authorize Spotify.
+You also need a WiFi network, a Spotify Premium account, and your own Spotify application. Read [EULA.md](EULA.md), [PRIVACY.md](PRIVACY.md), and [SECURITY.md](SECURITY.md) before you authorize Spotify.
 
-## Back up the factory image
+Spotify limits Streaming integrations to Approved Devices. Spotify does not clearly state how this rule applies to a source-only ESP32 repository. Bop does not claim Spotify approval.
 
-Run `mise run backup` **before** you provision. Order is important here.
+## Create a Spotify application
 
-`mise run backup` reads all 16 MB of flash into `backups/factory.bin` and writes
-a SHA-256 file next to it. `.gitignore` excludes `backups/`.
+1. Open <https://developer.spotify.com/dashboard>.
+2. Select **Create app**.
+3. Enter an application name and description.
+4. Add `http://127.0.0.1:43821/callback` as a Redirect URI.
+5. Select **Web API**.
+6. Accept the Spotify terms and save the application.
+7. Open **Settings** and copy the Client ID.
 
-The command first reads the 24 KB credential partition alone. If that partition
-holds `wifi_ssid`, `wifi_pass`, `client_id`, or `refresh_tok`, the command stops
-and reads nothing more. A backup taken after provisioning would hold your WiFi
-password and your Spotify refresh token as plaintext, so Bop does not take one.
-There is no flag that turns this refusal off.
+Do not create or enter a client secret. Bop uses OAuth PKCE and needs only the Client ID.
 
-The command applies the same scan to a `backups/factory.bin` that already
-exists, before it hashes or accepts the file. It refuses a file that holds any
-credential key, even when the size and the SHA-256 file match.
+## Install and provision
 
-If a valid backup already exists, the command keeps it and reads nothing from
-the device. That is why `mise run flash` still works after you provision.
+1. Install Git and [mise](https://mise.jdx.dev/).
+2. Run `git clone https://github.com/markphelps/bop-esp32.git`.
+3. Run `cd bop-esp32`.
+4. Connect the board with a USB data cable.
+5. Run `mise install`.
+6. Run `mise run provision`.
+7. Read the shown paths for `EULA.md` and `PRIVACY.md`.
+8. Type `I AGREE` exactly when the command asks.
+9. Enter the WiFi values and Spotify Client ID.
+10. Complete Spotify authorization in the browser.
+11. Run `mise run flash`.
 
-If you have already provisioned and you have no backup, run
-`mise run deprovision` first. That gives you an unprovisioned device again.
+`mise run provision` requires a credential-free backup. A backup made before the first flash is the factory image. `mise run flash` also requires a valid backup.
 
-**A backup you take after `mise run deprovision` is not the factory image.** It
-is the Bop flash with an erased credential partition. It is credential-free, and
-`mise run restore` accepts it, but it does not return the board to its shipped
-state. Only a backup taken before your first flash does that.
+If a valid backup exists, the backup task validates it and does not read the board. If an incomplete or invalid backup exists, the task stops. Move that backup out of `backups/` before you try again.
 
-## Restore the factory image
+If no backup exists, the task reads the credential partition first. It reads all flash only when the partition has no credentials.
 
-`mise run restore` writes `backups/factory.bin` back to the device.
+The backup command reads the 24 KB credential partition first. It refuses to make a full backup after provisioning. This prevents a backup from holding WiFi credentials or a refresh token.
 
-1. If the device still runs Bop firmware and holds credentials, run
-   `mise run deprovision` first, so that Spotify stops trusting it. That command
-   refuses a board that is not running Bop, so skip this step on a board you
-   have already restored.
-2. Connect the board with a USB data cable.
-3. Run `mise run restore`.
-4. Check the image path, USB port, and MAC address that the command shows.
-5. Type `RESTORE`, followed by the shown MAC address.
+Set `BOP_PORT` when more than one Espressif board is connected. Set `BOP_IDF_PATH` to use an ESP-IDF checkout outside the default location.
 
-The command restores only an image that is a complete 16 MB, matches its
-SHA-256 file, and holds no credential key. It refuses every other image.
+After the flash, the board restarts. It connects to WiFi and shows Spotify playback when a player is active.
 
-A restore overwrites all 16 MB. It replaces the firmware and every value the
-device holds, and you cannot undo it.
+## Update the firmware
 
-The command checks the image and the device again after you approve, and it
-writes on the same connection. An image or a board that changes while the prompt
-waits stops the restore.
+1. Pull the latest source changes.
+2. Run `mise install`.
+3. Run `mise run flash`.
 
-## Rehearse the installation from a clean clone
+The existing factory backup lets the flash task run after provisioning. Keep this backup for factory recovery.
 
-This section is for the maintainer. Do this to prove that the public
-instructions work with no hidden local state.
+Deprovisioning erases credentials. It does not restore factory firmware. A new backup after deprovisioning contains Bop firmware, not the shipped factory image.
 
-1. Be ready to lose everything on the device. This procedure erases it.
-2. Run `mise run deprovision` in the development checkout.
-3. Run `mise run restore` in the development checkout. The device now holds the
-   image from `backups/factory.bin` again. When that image is the one you took
-   before your first flash, the board is back to its shipped state.
-4. **Only now**, make the clean clone in a new directory.
-5. Copy nothing into the clean clone. No `backups/` directory, no build output,
-   no credential, and no local configuration file.
-6. In the clean clone, run `mise install`, `mise run backup`,
-   `mise run provision`, and `mise run flash`.
-
-Step 3 must finish before step 4. The clean clone takes its own backup at step
-6, and that backup is only safe because the device is unprovisioned by then.
-
-## Remove Spotify access and device data
+## Remove Spotify access and credentials
 
 1. Connect the board with a USB data cable.
 2. Run `mise run deprovision`.
-3. Remove Bop access on the Spotify connected-apps page that opens.
-4. Type `REMOVED` after you remove the access.
-5. Check the USB port and MAC address that the command shows.
-6. Type `ERASE`, followed by the shown MAC address, to approve the device erase.
+3. Remove Bop access on the Spotify page that opens.
+4. Type `REMOVED` exactly when the command asks.
+5. Read the shown USB port and MAC address.
+6. Type `ERASE`, followed by the shown MAC address.
 
-The command first checks the Bop firmware and partition layout. Then it erases the complete Bop NVS credential partition through USB. It reads the partition after the erase. It stops if a credential key or data remains.
+The command erases the Bop credential partition. It reads the partition after the erase. Then it restarts the board in provisioning mode.
 
-The command restarts the board after a successful read-back. The existing provisioning screen appears. The firmware does not make Spotify requests without credentials.
+## Restore the factory image
 
-Do not give or sell the board before this process finishes.
+`mise run restore` writes `backups/factory.bin` to the device. The image must be 16 MB, match its SHA-256 file, and contain no Bop credential key.
 
-## Authorize again
+CAUTION: A restore overwrites all flash contents. You cannot undo this operation.
 
-If you remove Bop access, run `mise run provision` to authorize Bop again. Then run `mise run flash` if the firmware is not installed.
+1. If Bop still has credentials, run `mise run deprovision` first.
+2. Connect the board with a USB data cable.
+3. Run `mise run restore`.
+4. Read the image path, USB port, and MAC address.
+5. Type `RESTORE`, followed by the shown MAC address.
 
-Read [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) when a command stops.
+A backup made before your first flash restores the shipped board state. A backup made after deprovisioning restores Bop with erased credentials. It does not restore the shipped firmware.
+
+## Recover a board that does not reset
+
+1. Disconnect the USB cable.
+2. Press and hold the BOOT button.
+3. Connect the USB cable.
+4. Release the BOOT button.
+5. Run `mise run flash`.
+
+Read [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) if a command stops.
