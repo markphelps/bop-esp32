@@ -1,10 +1,13 @@
 # Bop
 
-Bop is a source-only Spotify remote for the Waveshare ESP32-S3 Touch AMOLED 1.8 board.
+Bop is a source-only Spotify remote for the [Waveshare ESP32-S3 Touch AMOLED 1.8 board](https://www.waveshare.com/esp32-s3-touch-amoled-1.8.htm).
 
 It shows the current track and sends touch controls to Spotify. It does not play audio.
 
-<!-- Photo needed: Add an original photo of the assembled Bop board here before publication. -->
+<p align="center">
+    <img src="./images/mxpx.png" alt="Album Art - Now Playing" width=368 height=448 />
+    <img src="./images/spotify.png" alt="Launch in Spotify" width=368 height=448 />
+</p>
 
 ## Project status
 
