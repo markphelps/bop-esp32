@@ -310,6 +310,7 @@ def test_firmware_shows_provisioning_before_spotify_starts() -> None:
     assert source.index('create_placeholder("run:\\nmise run provision")') < source.index(
         "if (!provisioned) {"
     )
+    assert source.index("bop_screenshot_start(display)") < source.index("if (!provisioned) {")
     assert source.index("if (!provisioned) {") < source.index("xTaskCreatePinnedToCore")
 
 

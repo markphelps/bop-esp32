@@ -5,7 +5,6 @@
 
 #include <ctype.h>
 #include <limits.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -691,33 +690,6 @@ static void client_task(void *argument)
     }
 }
 
-static void debug_console_task(void *argument)
-{
-    (void)argument;
-    ESP_LOGI(TAG, "Serial controls: n=next, b=previous, t=toggle");
-    for (;;) {
-        int input = getchar();
-        if (input == EOF) {
-            clearerr(stdin);
-            vTaskDelay(pdMS_TO_TICKS(50));
-            continue;
-        }
-        spotify_command_t command;
-        if (input == 'n' || input == 'N') {
-            command = SPOTIFY_COMMAND_NEXT;
-        } else if (input == 'b' || input == 'B') {
-            command = SPOTIFY_COMMAND_PREVIOUS;
-        } else if (input == 't' || input == 'T') {
-            command = SPOTIFY_COMMAND_TOGGLE;
-        } else {
-            continue;
-        }
-        if (!bop_spotify_enqueue_command(command, 0)) {
-            ESP_LOGW(TAG, "Command queue is full");
-        }
-    }
-}
-
 esp_err_t bop_spotify_start(bop_credentials_t *credentials)
 {
     if (credentials == NULL || client_started) {
@@ -767,11 +739,6 @@ esp_err_t bop_spotify_start(bop_credentials_t *credentials)
         return ESP_ERR_NO_MEM;
     }
     client_started = true;
-    if (xTaskCreatePinnedToCore(
-            debug_console_task, "spotify_console", 3072, NULL, 2, NULL, SPOTIFY_TASK_CORE)
-        != pdPASS) {
-        ESP_LOGW(TAG, "Serial command task creation failed");
-    }
     return ESP_OK;
 }
 
@@ -785,6 +752,11 @@ bool bop_spotify_get_state(playback_state_t *state)
     bool ready = state_ready;
     xSemaphoreGive(state_mutex);
     return ready;
+}
+
+bool bop_spotify_commands_ready(void)
+{
+    return command_queue != NULL;
 }
 
 bool bop_spotify_enqueue_command(spotify_command_t command, uint32_t request_id)

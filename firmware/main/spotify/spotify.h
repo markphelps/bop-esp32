@@ -41,5 +41,6 @@ typedef struct {
 
 esp_err_t bop_spotify_start(bop_credentials_t *credentials);
 bool bop_spotify_get_state(playback_state_t *state);
+bool bop_spotify_commands_ready(void);
 bool bop_spotify_enqueue_command(spotify_command_t command, uint32_t request_id);
 bool bop_spotify_get_command_result(spotify_command_result_t *result);

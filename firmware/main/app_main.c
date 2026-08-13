@@ -17,6 +17,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "power.h"
+#include "screenshot.h"
 #include "spotify/spotify.h"
 #include "ui/ui.h"
 #include "wifi.h"
@@ -85,6 +86,7 @@ static void flush_display(lv_display_t *display, const lv_area_t *area, uint8_t 
        transfer waits until DMA is complete before LVGL reuses its buffer. */
     ESP_ERROR_CHECK(
         esp_lcd_panel_io_tx_param(display_panel_io, CO5300_QSPI_NOP, NULL, 0));
+    bop_screenshot_mirror_area(area, pixels);
     lv_display_flush_ready(display);
 }
 
@@ -189,6 +191,10 @@ void app_main(void)
         ESP_LOGE(TAG, "Display start failed");
         return;
     }
+    const bool screenshot_ready = bop_screenshot_init() == ESP_OK;
+    if (!screenshot_ready) {
+        ESP_LOGW(TAG, "Screenshot initialization failed");
+    }
     ESP_ERROR_CHECK(bsp_display_brightness_set(85));
     esp_err_t power_error = bop_power_start();
     if (power_error != ESP_OK) {
@@ -210,6 +216,12 @@ void app_main(void)
         ui_error = bop_ui_start();
     } else {
         create_placeholder("run:\nmise run provision");
+    }
+    if (ui_error == ESP_OK && screenshot_ready) {
+        esp_err_t screenshot_error = bop_screenshot_start(display);
+        if (screenshot_error != ESP_OK) {
+            ESP_LOGW(TAG, "Screenshot task start failed: %s", esp_err_to_name(screenshot_error));
+        }
     }
     bsp_display_unlock();
 

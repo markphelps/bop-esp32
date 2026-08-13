@@ -7,6 +7,7 @@ idf_component_register(
         "credentials.c"
         "diagnostics.c"
         "power.c"
+        "screenshot.c"
         "spotify/spotify.c"
         "ui/art.c"
         "ui/fonts/lv_font_montserrat_bold_24.c"
@@ -15,6 +16,7 @@ idf_component_register(
     INCLUDE_DIRS "."
     REQUIRES
         esp32_s3_touch_amoled_1_8
+        esp_driver_usb_serial_jtag
         esp_http_client
         esp_netif
         esp_timer
