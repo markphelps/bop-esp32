@@ -218,6 +218,43 @@ def test_not_ready_response_is_retried() -> None:
     assert serial.events.count("write:s") == 2
 
 
+def test_corrupted_frame_is_distinct_from_a_device_error() -> None:
+    try:
+        read_frame([frame(crc=0)])
+    except screenshot.ScreenshotCorruptFrameError:
+        pass
+    else:
+        raise AssertionError("did not identify the corrupted frame")
+
+    try:
+        read_frame([error_frame(2)])
+    except (screenshot.ScreenshotNotReadyError, screenshot.ScreenshotCorruptFrameError):
+        raise AssertionError("treated a device error frame as a retryable frame")
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("accepted a device error frame")
+
+
+def test_corrupted_frame_is_retried() -> None:
+    corrupted = bytearray(frame())
+    corrupted[screenshot.HEADER_LENGTH] ^= 0xFF
+    serial = FakeSerial([bytes(corrupted), frame()])
+    with tempfile.TemporaryDirectory() as directory:
+        output = Path(directory) / "screen.png"
+        with (
+            patch.object(screenshot.detect_port, "detect_port", return_value="/dev/usb"),
+            patch.object(screenshot.time, "sleep"),
+        ):
+            screenshot.screenshot(output, lambda: serial)
+        chunks = png_chunks(output.read_bytes())
+    assert serial.events.count("write:s") == 2
+    assert serial.events.count("reset") == 2
+    assert serial.events.index("reset") < serial.events.index("write:s")
+    scanlines = zlib.decompress(chunks[b"IDAT"])
+    assert scanlines[:4] == b"\x00\xff\x00\x00"
+
+
 def test_device_error_frame_never_creates_an_image() -> None:
     with tempfile.TemporaryDirectory() as directory:
         output = Path(directory) / "screen.png"
@@ -230,6 +267,7 @@ def test_device_error_frame_never_creates_an_image() -> None:
             else:
                 raise AssertionError("accepted a device error frame")
         assert not output.exists()
+        assert serial.events.count("write:s") == 1
         assert serial.events[-1] == "close"
 
 
@@ -340,6 +378,8 @@ def main() -> int:
     test_every_invalid_header_field_is_refused()
     test_not_ready_response_is_distinct_from_other_device_errors()
     test_not_ready_response_is_retried()
+    test_corrupted_frame_is_distinct_from_a_device_error()
+    test_corrupted_frame_is_retried()
     test_device_error_frame_never_creates_an_image()
     test_opening_never_reaches_the_reset_line_state()
     test_png_has_correct_dimensions_and_rgb_pixels()

@@ -34,6 +34,17 @@ class ScreenshotNotReadyError(RuntimeError):
     """The device has not finished its first display mirror refresh."""
 
 
+class ScreenshotCorruptFrameError(RuntimeError):
+    """Other output reached the port and damaged the payload.
+
+    The firmware serializes only `esp_log` output against the binary frame.
+    ROM output, panic output, and a direct write to stdout still reach the
+    port, so a frame can arrive damaged while the device stays healthy. A
+    second request usually returns a clean frame, which a device error frame
+    never does.
+    """
+
+
 class SerialConnection(Protocol):
     """The subset of pyserial used for one screenshot request."""
 
@@ -203,7 +214,7 @@ def read_frame(connection: SerialConnection, deadline: float | None = None) -> b
     payload = bytes(buffer[:PIXEL_BYTES])
     actual_crc = zlib.crc32(payload) & 0xFFFFFFFF
     if actual_crc != expected_crc:
-        raise RuntimeError("The screenshot response has an invalid CRC")
+        raise ScreenshotCorruptFrameError("The screenshot response has an invalid CRC")
     return payload
 
 
@@ -255,23 +266,29 @@ def write_png(path: Path, payload: bytes) -> None:
 
 
 def screenshot(path: Path, factory: Callable[[], SerialConnection]) -> None:
-    """Request a screenshot and write it after the complete frame validates."""
+    """Request a screenshot and write it after the complete frame validates.
+
+    A not-ready device and a damaged frame both get a new request inside the
+    same deadline. The stale input is discarded before each request, because
+    the bytes that damaged one frame must not reach the next one. A device
+    error frame stops the request at once.
+    """
     if path.exists():
         raise RuntimeError(f"The output file already exists: {path}")
     connection = open_serial(factory)
     deadline = time.monotonic() + FRAME_TIMEOUT_SECONDS
     try:
-        connection.reset_input_buffer()
         while True:
             if time.monotonic() >= deadline:
                 raise RuntimeError("Timed out while waiting for a complete screenshot frame")
+            connection.reset_input_buffer()
             if connection.write(b"s") != 1:
                 raise RuntimeError("Could not send the screenshot request")
             connection.flush()
             try:
                 write_png(path, read_frame(connection, deadline))
                 return
-            except ScreenshotNotReadyError:
+            except (ScreenshotNotReadyError, ScreenshotCorruptFrameError):
                 time.sleep(0.1)
     finally:
         connection.close()
