@@ -104,13 +104,15 @@ def open_serial(factory: Callable[[], SerialConnection]) -> SerialConnection:
 
 
 def read_more(connection: SerialConnection, deadline: float) -> bytes:
-    """Read one serial chunk, or stop when the complete-frame deadline expires."""
-    data = connection.read(4096)
-    if data:
-        return data
+    """Read one serial chunk, or stop when the complete-frame deadline expires.
+
+    The deadline is read before each chunk, not only after an empty one. A
+    board that resets in a loop sends log bytes without a pause, and a check
+    that only an empty read can reach never occurs.
+    """
     if time.monotonic() >= deadline:
         raise RuntimeError("Timed out while waiting for a complete screenshot frame")
-    return b""
+    return connection.read(4096)
 
 
 def validate_header(header: bytes) -> int:
