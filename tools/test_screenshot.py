@@ -128,18 +128,19 @@ def test_firmware_uses_bounded_serial_writes() -> None:
     assert "usb_serial_jtag_write_bytes(source + offset, write_size, portMAX_DELAY)" in writer
 
 
-def test_initial_refresh_uses_a_dedicated_task() -> None:
+def test_screenshot_task_refreshes_the_current_display() -> None:
     source = (ROOT / "firmware/main/screenshot.c").read_text(encoding="utf-8")
-    refresh_start = source.index("static void initial_refresh_task")
+    refresh_start = source.index("static void refresh_mirror")
     refresh_end = source.index("static void screenshot_task", refresh_start)
-    refresh_task = source[refresh_start:refresh_end]
-    start = source.index("esp_err_t bop_screenshot_start")
-    screenshot_start = source[start:]
-    assert "#define BOP_SCREENSHOT_REFRESH_TASK_STACK_SIZE 8192U" in source
-    assert "lv_refr_now(display);" in refresh_task
-    assert "bsp_display_lock(0)" in refresh_task
-    assert "initial_refresh_task" in screenshot_start
-    assert "lv_refr_now(display);" not in screenshot_start
+    refresh = source[refresh_start:refresh_end]
+    task_start = source.index("static void screenshot_task")
+    task_end = source.index("esp_err_t bop_screenshot_init", task_start)
+    task = source[task_start:task_end]
+    assert "#define BOP_SCREENSHOT_TASK_STACK_SIZE 8192U" in source
+    assert "lv_refr_now(display);" in refresh
+    assert "bsp_display_lock(0)" in refresh
+    assert "refresh_mirror(display);" in task
+    assert task.index("refresh_mirror(display);") < task.index("send_screenshot();")
 
 
 def test_initial_refresh_starts_after_the_main_task_unlocks_lvgl() -> None:
@@ -323,7 +324,7 @@ def test_main_requires_one_new_output_path() -> None:
 
 def main() -> int:
     test_firmware_uses_bounded_serial_writes()
-    test_initial_refresh_uses_a_dedicated_task()
+    test_screenshot_task_refreshes_the_current_display()
     test_initial_refresh_starts_after_the_main_task_unlocks_lvgl()
     test_fragmented_frame_and_split_magic()
     test_log_magic_before_a_frame_is_skipped()

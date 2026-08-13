@@ -32,8 +32,7 @@
 #define BOP_SCREENSHOT_PIXEL_FORMAT_RGB565_BE 1U
 #define BOP_SCREENSHOT_SERIAL_BUFFER_SIZE 4096U
 #define BOP_SCREENSHOT_SERIAL_WRITE_SIZE 1024U
-#define BOP_SCREENSHOT_REFRESH_TASK_STACK_SIZE 8192U
-#define BOP_SCREENSHOT_TASK_STACK_SIZE 4096U
+#define BOP_SCREENSHOT_TASK_STACK_SIZE 8192U
 #define BOP_SCREENSHOT_TASK_CORE 0
 
 static const char *TAG = "screenshot";
@@ -162,12 +161,10 @@ static void render_event(lv_event_t *event)
     }
 }
 
-static void initial_refresh_task(void *argument)
+static void refresh_mirror(lv_display_t *display)
 {
-    lv_display_t *display = argument;
     if (!bsp_display_lock(0)) {
         ESP_LOGW(TAG, "LVGL lock failed during screenshot refresh");
-        vTaskDelete(NULL);
         return;
     }
     lv_obj_invalidate(lv_screen_active());
@@ -176,18 +173,19 @@ static void initial_refresh_task(void *argument)
     mirror_ready = true;
     xSemaphoreGiveRecursive(mirror_mutex);
     bsp_display_unlock();
-    vTaskDelete(NULL);
 }
 
 static void screenshot_task(void *argument)
 {
-    (void)argument;
+    lv_display_t *display = argument;
+    refresh_mirror(display);
     for (;;) {
         uint8_t input;
         if (usb_serial_jtag_read_bytes(&input, 1, portMAX_DELAY) != 1) {
             continue;
         }
         if (input == 's') {
+            refresh_mirror(display);
             send_screenshot();
         } else {
             handle_spotify_command(input);
@@ -242,23 +240,12 @@ esp_err_t bop_screenshot_start(lv_display_t *display)
         xSemaphoreGiveRecursive(mirror_mutex);
         lv_display_add_event_cb(display, render_event, LV_EVENT_RENDER_START, NULL);
         lv_display_add_event_cb(display, render_event, LV_EVENT_RENDER_READY, NULL);
-        if (xTaskCreatePinnedToCore(
-                initial_refresh_task,
-                "bop_screenshot_refresh",
-                BOP_SCREENSHOT_REFRESH_TASK_STACK_SIZE,
-                display,
-                2,
-                NULL,
-                BOP_SCREENSHOT_TASK_CORE)
-            != pdPASS) {
-            return ESP_ERR_NO_MEM;
-        }
     }
     if (xTaskCreatePinnedToCore(
             screenshot_task,
             "bop_screenshot",
             BOP_SCREENSHOT_TASK_STACK_SIZE,
-            NULL,
+            display,
             2,
             NULL,
             BOP_SCREENSHOT_TASK_CORE)
