@@ -29,6 +29,7 @@
 #define BOP_SCREENSHOT_STATUS_NO_MEMORY 2U
 #define BOP_SCREENSHOT_PIXEL_FORMAT_RGB565_BE 1U
 #define BOP_SCREENSHOT_SERIAL_BUFFER_SIZE 4096U
+#define BOP_SCREENSHOT_SERIAL_WRITE_SIZE 1024U
 
 static const char *TAG = "screenshot";
 static uint8_t *mirror_buffer;
@@ -80,7 +81,11 @@ static bool write_serial_bytes(const uint8_t *source, size_t size)
 {
     size_t offset = 0;
     while (offset < size) {
-        int written = usb_serial_jtag_write_bytes(source + offset, size - offset, portMAX_DELAY);
+        size_t remaining = size - offset;
+        size_t write_size = remaining < BOP_SCREENSHOT_SERIAL_WRITE_SIZE
+            ? remaining
+            : BOP_SCREENSHOT_SERIAL_WRITE_SIZE;
+        int written = usb_serial_jtag_write_bytes(source + offset, write_size, portMAX_DELAY);
         if (written <= 0) {
             return false;
         }

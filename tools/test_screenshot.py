@@ -17,6 +17,8 @@ import zlib
 
 import screenshot  # pyright: ignore[reportMissingImports]
 
+ROOT = Path(__file__).resolve().parent.parent
+
 
 class FakeSerial:
     """A serial connection that returns predetermined fragments."""
@@ -108,6 +110,16 @@ def png_chunks(image: bytes) -> dict[bytes, bytes]:
         chunks[kind] = image[start : start + length]
         position = start + length + 4
     return chunks
+
+
+def test_firmware_uses_bounded_serial_writes() -> None:
+    source = (ROOT / "firmware/main/screenshot.c").read_text(encoding="utf-8")
+    assert "#define BOP_SCREENSHOT_SERIAL_WRITE_SIZE 1024U" in source
+    start = source.index("static bool write_serial_bytes")
+    end = source.index("static bool send_response", start)
+    writer = source[start:end]
+    assert "write_size" in writer
+    assert "usb_serial_jtag_write_bytes(source + offset, write_size, portMAX_DELAY)" in writer
 
 
 def test_fragmented_frame_and_split_magic() -> None:
@@ -262,6 +274,7 @@ def test_main_requires_one_new_output_path() -> None:
 
 
 def main() -> int:
+    test_firmware_uses_bounded_serial_writes()
     test_fragmented_frame_and_split_magic()
     test_log_magic_before_a_frame_is_skipped()
     test_preheader_limit()
