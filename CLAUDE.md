@@ -60,8 +60,9 @@ each pull request: `firmware`, `host-tools (linux)`, `python-style`, `secrets`,
 and `licenses`. Each host job runs the matching local `mise` task, from the
 versions that `mise.toml` pins. The `firmware` job is the exception: it runs
 `idf.py` inside the official ESP-IDF container, whose release must stay equal to
-`IDF_TAG` in `tools/setup_idf.py`. CI is Linux only. macOS is tested locally on
-the board, and Windows is not tested.
+`IDF_TAG` in `tools/setup_idf.py`. No check holds those two together, so move
+both when you move one. CI is Linux only. macOS is tested locally on the board,
+and Windows is not tested.
 
 ## Firmware architecture
 
@@ -166,8 +167,7 @@ Some host checks assert on the text of other sources.
 `test_display_recovery.py` reads `app_main.c`. `test_playback_feedback.py`
 reads `ui.c` and `spotify.c`. `test_deprovision.py` reads `app_main.c`,
 `firmware/CMakeLists.txt`, and `firmware/partitions.csv`. `test_provision.py`
-reads `credentials.c`. `test_ci.py` reads `.github/workflows/ci.yml` and
-`tools/setup_idf.py`. An edit to those files can turn the checks red even when
+reads `credentials.c`. An edit to those files can turn the checks red even when
 the code is correct. Read the failing assertion, then decide whether the check
 or the code is wrong.
 

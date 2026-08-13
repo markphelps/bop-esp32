@@ -29,7 +29,7 @@ permissions:
 # A new commit cancels the earlier run of the same pull request. A push to main
 # is never canceled, because a canceled run leaves that commit without a result.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -44,7 +44,7 @@ jobs:
     name: firmware
     runs-on: ubuntu-latest
     # The release in the comment must stay equal to IDF_TAG in
-    # tools/setup_idf.py. tools/test_ci.py holds the two together.
+    # tools/setup_idf.py. Nothing checks that for you.
     container: espressif/idf@sha256:a9231d0697ab8f7517cc072e93b7c83e04907bfbfba80b6440d7dbbf90665cf2 # v5.5.5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -73,6 +73,7 @@ jobs:
       - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
         with:
           version: 2026.8.5
+          install_args: python
       - run: mise run test-host
 
   python-style:
@@ -85,6 +86,7 @@ jobs:
       - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
         with:
           version: 2026.8.5
+          install_args: ruff
       - run: mise run format-check
       - run: mise run lint
 
@@ -101,6 +103,7 @@ jobs:
       - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
         with:
           version: 2026.8.5
+          install_args: python gitleaks
       - run: mise run secrets
 
   licenses:
@@ -113,4 +116,5 @@ jobs:
       - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
         with:
           version: 2026.8.5
+          install_args: pipx
       - run: mise run licenses
