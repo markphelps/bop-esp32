@@ -122,6 +122,28 @@ def test_firmware_uses_bounded_serial_writes() -> None:
     assert "usb_serial_jtag_write_bytes(source + offset, write_size, portMAX_DELAY)" in writer
 
 
+def test_initial_refresh_uses_a_dedicated_task() -> None:
+    source = (ROOT / "firmware/main/screenshot.c").read_text(encoding="utf-8")
+    refresh_start = source.index("static void initial_refresh_task")
+    refresh_end = source.index("static void screenshot_task", refresh_start)
+    refresh_task = source[refresh_start:refresh_end]
+    start = source.index("esp_err_t bop_screenshot_start")
+    screenshot_start = source[start:]
+    assert "#define BOP_SCREENSHOT_REFRESH_TASK_STACK_SIZE 8192U" in source
+    assert "lv_refr_now(display);" in refresh_task
+    assert "bsp_display_lock(0)" in refresh_task
+    assert "initial_refresh_task" in screenshot_start
+    assert "lv_refr_now(display);" not in screenshot_start
+
+
+def test_initial_refresh_starts_after_the_main_task_unlocks_lvgl() -> None:
+    source = (ROOT / "firmware/main/app_main.c").read_text(encoding="utf-8")
+    start = source.index("void app_main(void)")
+    main = source[start:]
+    assert main.index("bsp_display_unlock();") < main.index("bop_screenshot_start(display)")
+    assert main.index("bop_screenshot_start(display)") < main.index("if (!provisioned) {")
+
+
 def test_fragmented_frame_and_split_magic() -> None:
     expected = payload()
     response = b"logs\nBO" + frame(expected)
@@ -275,6 +297,8 @@ def test_main_requires_one_new_output_path() -> None:
 
 def main() -> int:
     test_firmware_uses_bounded_serial_writes()
+    test_initial_refresh_uses_a_dedicated_task()
+    test_initial_refresh_starts_after_the_main_task_unlocks_lvgl()
     test_fragmented_frame_and_split_magic()
     test_log_magic_before_a_frame_is_skipped()
     test_preheader_limit()

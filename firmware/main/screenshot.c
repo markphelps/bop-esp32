@@ -7,9 +7,11 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "bsp/esp32_s3_touch_amoled_1_8.h"
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
 #include "esp_crc.h"
+#include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/semphr.h"
@@ -30,6 +32,9 @@
 #define BOP_SCREENSHOT_PIXEL_FORMAT_RGB565_BE 1U
 #define BOP_SCREENSHOT_SERIAL_BUFFER_SIZE 4096U
 #define BOP_SCREENSHOT_SERIAL_WRITE_SIZE 1024U
+#define BOP_SCREENSHOT_REFRESH_TASK_STACK_SIZE 8192U
+#define BOP_SCREENSHOT_TASK_STACK_SIZE 4096U
+#define BOP_SCREENSHOT_TASK_CORE 0
 
 static const char *TAG = "screenshot";
 static uint8_t *mirror_buffer;
@@ -157,6 +162,23 @@ static void render_event(lv_event_t *event)
     }
 }
 
+static void initial_refresh_task(void *argument)
+{
+    lv_display_t *display = argument;
+    if (!bsp_display_lock(0)) {
+        ESP_LOGW(TAG, "LVGL lock failed during screenshot refresh");
+        vTaskDelete(NULL);
+        return;
+    }
+    lv_obj_invalidate(lv_screen_active());
+    lv_refr_now(display);
+    xSemaphoreTakeRecursive(mirror_mutex, portMAX_DELAY);
+    mirror_ready = true;
+    xSemaphoreGiveRecursive(mirror_mutex);
+    bsp_display_unlock();
+    vTaskDelete(NULL);
+}
+
 static void screenshot_task(void *argument)
 {
     (void)argument;
@@ -220,14 +242,26 @@ esp_err_t bop_screenshot_start(lv_display_t *display)
         xSemaphoreGiveRecursive(mirror_mutex);
         lv_display_add_event_cb(display, render_event, LV_EVENT_RENDER_START, NULL);
         lv_display_add_event_cb(display, render_event, LV_EVENT_RENDER_READY, NULL);
-        lv_obj_invalidate(lv_screen_active());
-        lv_refr_now(display);
-        xSemaphoreTakeRecursive(mirror_mutex, portMAX_DELAY);
-        mirror_ready = true;
-        xSemaphoreGiveRecursive(mirror_mutex);
+        if (xTaskCreatePinnedToCore(
+                initial_refresh_task,
+                "bop_screenshot_refresh",
+                BOP_SCREENSHOT_REFRESH_TASK_STACK_SIZE,
+                display,
+                2,
+                NULL,
+                BOP_SCREENSHOT_TASK_CORE)
+            != pdPASS) {
+            return ESP_ERR_NO_MEM;
+        }
     }
     if (xTaskCreatePinnedToCore(
-            screenshot_task, "bop_screenshot", 4096, NULL, 2, NULL, 0)
+            screenshot_task,
+            "bop_screenshot",
+            BOP_SCREENSHOT_TASK_STACK_SIZE,
+            NULL,
+            2,
+            NULL,
+            BOP_SCREENSHOT_TASK_CORE)
         != pdPASS) {
         return ESP_ERR_NO_MEM;
     }

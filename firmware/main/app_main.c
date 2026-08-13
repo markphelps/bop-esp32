@@ -217,17 +217,17 @@ void app_main(void)
     } else {
         create_placeholder("run:\nmise run provision");
     }
-    if (ui_error == ESP_OK && screenshot_ready) {
-        esp_err_t screenshot_error = bop_screenshot_start(display);
-        if (screenshot_error != ESP_OK) {
-            ESP_LOGW(TAG, "Screenshot task start failed: %s", esp_err_to_name(screenshot_error));
-        }
-    }
     bsp_display_unlock();
 
     if (ui_error != ESP_OK) {
         ESP_LOGE(TAG, "UI start failed: %s", esp_err_to_name(ui_error));
         return;
+    }
+    if (screenshot_ready) {
+        esp_err_t screenshot_error = bop_screenshot_start(display);
+        if (screenshot_error != ESP_OK) {
+            ESP_LOGW(TAG, "Screenshot task start failed: %s", esp_err_to_name(screenshot_error));
+        }
     }
     if (!provisioned) {
         ESP_LOGW(TAG, "Provisioning values are missing: %s", esp_err_to_name(credentials_error));
