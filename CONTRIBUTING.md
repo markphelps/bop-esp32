@@ -41,9 +41,10 @@ after it to make sure that the files are formatted.
 commands do not need a board. `mise run secrets` scans tracked files and all
 branches and tags. `mise run licenses` checks SPDX license and copyright data.
 
-Do not run `backup`, `restore`, `provision`, `deprovision`, `flash`, or
-`flash-perf` as a documentation or software check. These commands can read or
-write a physical device.
+Do not run `mise run backup`, `mise run restore`, `mise run provision`,
+`mise run deprovision`, `mise run flash`, or `mise run flash-perf` as a
+documentation or software check. These commands can read or write a physical
+device.
 
 Read [docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md) for the complete `mise` task
 list and [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) when a command
