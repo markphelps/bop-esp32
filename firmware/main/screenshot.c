@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "driver/usb_serial_jtag.h"
@@ -48,7 +49,11 @@ static uint8_t *mirror_buffer;
 static uint8_t *staging_buffer;
 static SemaphoreHandle_t mirror_mutex;
 static SemaphoreHandle_t serial_output_mutex;
-static vprintf_like_t original_vprintf;
+// esp_log_set_vprintf installs the new hook before it returns the previous
+// one, so a log line from another core can reach serial_log_vprintf before
+// that returned pointer lands here. This initializer is the handler the log
+// component starts with, so the pointer already works in that window.
+static vprintf_like_t original_vprintf = vprintf;
 static TaskHandle_t screenshot_task_handle;
 static bool mirror_ready;
 static bool refresh_requested;
@@ -269,7 +274,13 @@ esp_err_t bop_screenshot_init(void)
         return error;
     }
     usb_serial_jtag_vfs_use_driver();
-    original_vprintf = esp_log_set_vprintf(serial_log_vprintf);
+    // Keep the handler that was installed before this one, so its output
+    // survives. The guard keeps the initializer's promise: this pointer never
+    // becomes NULL, whatever the log component hands back.
+    vprintf_like_t previous = esp_log_set_vprintf(serial_log_vprintf);
+    if (previous != NULL) {
+        original_vprintf = previous;
+    }
 
     mirror_buffer = heap_caps_malloc(
         BOP_SCREENSHOT_PAYLOAD_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);

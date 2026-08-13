@@ -179,6 +179,25 @@ def test_an_abandoned_frame_releases_the_mutex_and_is_reported_once() -> None:
     assert "abandoned" in sender
 
 
+def test_the_log_hook_is_never_installed_over_a_null_forward_pointer() -> None:
+    """The hook goes live before the returned handler is stored.
+
+    esp_log_set_vprintf installs serial_log_vprintf and only then returns the
+    previous handler, and bop_screenshot_init runs after the LVGL task starts
+    on core 1. A log line in that window calls the forward pointer, so the
+    pointer needs a working value before the hook goes live.
+    """
+    source = firmware_source()
+    declaration = "static vprintf_like_t original_vprintf = vprintf;"
+    assert declaration in source
+    assert source.index(declaration) < source.index("esp_log_set_vprintf(")
+    initialization = firmware_function(
+        "esp_err_t bop_screenshot_init", "esp_err_t bop_screenshot_start"
+    )
+    assert "vprintf_like_t previous = esp_log_set_vprintf(serial_log_vprintf);" in initialization
+    assert "if (previous != NULL) {" in initialization
+
+
 def test_screenshot_refresh_runs_in_the_lvgl_task() -> None:
     source = (ROOT / "firmware/main/screenshot.c").read_text(encoding="utf-8")
     timer_start = source.index("static void refresh_timer")
@@ -422,6 +441,7 @@ def main() -> int:
     test_firmware_uses_bounded_serial_writes()
     test_one_serial_budget_covers_a_whole_screenshot_frame()
     test_an_abandoned_frame_releases_the_mutex_and_is_reported_once()
+    test_the_log_hook_is_never_installed_over_a_null_forward_pointer()
     test_screenshot_refresh_runs_in_the_lvgl_task()
     test_refresh_timer_is_created_before_the_main_task_unlocks_lvgl()
     test_fragmented_frame_and_split_magic()
