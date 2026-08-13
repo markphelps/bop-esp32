@@ -87,6 +87,12 @@ def frame(
     return header + body
 
 
+def error_frame(status: int) -> bytes:
+    return frame(status=status, width=0, height=0, pixel_format=0, payload_length=0, crc=0)[
+        : screenshot.HEADER_LENGTH
+    ]
+
+
 def read_frame(fragments: list[bytes]) -> bytes:
     return screenshot.read_frame(FakeSerial(fragments))
 
@@ -188,12 +194,32 @@ def test_every_invalid_header_field_is_refused() -> None:
     assert_refused(crc=0)
 
 
+def test_not_ready_response_is_distinct_from_other_device_errors() -> None:
+    try:
+        read_frame([error_frame(1)])
+    except screenshot.ScreenshotNotReadyError:
+        pass
+    else:
+        raise AssertionError("did not identify the not-ready response")
+
+
+def test_not_ready_response_is_retried() -> None:
+    serial = FakeSerial([error_frame(1), frame()])
+    with tempfile.TemporaryDirectory() as directory:
+        output = Path(directory) / "screen.png"
+        with (
+            patch.object(screenshot.detect_port, "detect_port", return_value="/dev/usb"),
+            patch.object(screenshot.time, "sleep"),
+        ):
+            screenshot.screenshot(output, lambda: serial)
+        assert output.is_file()
+    assert serial.events.count("write:s") == 2
+
+
 def test_device_error_frame_never_creates_an_image() -> None:
     with tempfile.TemporaryDirectory() as directory:
         output = Path(directory) / "screen.png"
-        serial = FakeSerial(
-            [frame(status=2, width=0, height=0, pixel_format=0, payload_length=0, crc=0)]
-        )
+        serial = FakeSerial([error_frame(2)])
         with patch.object(screenshot.detect_port, "detect_port", return_value="/dev/usb"):
             try:
                 screenshot.screenshot(output, lambda: serial)
@@ -304,6 +330,8 @@ def main() -> int:
     test_preheader_limit()
     test_timeout_and_eof_are_refused()
     test_every_invalid_header_field_is_refused()
+    test_not_ready_response_is_distinct_from_other_device_errors()
+    test_not_ready_response_is_retried()
     test_device_error_frame_never_creates_an_image()
     test_opening_clears_reset_signals_before_the_port()
     test_png_has_correct_dimensions_and_rgb_pixels()

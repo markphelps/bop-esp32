@@ -30,6 +30,10 @@ FRAME_TIMEOUT_SECONDS = 30
 REEXEC_GUARD = "BOP_SCREENSHOT_PYSERIAL_REEXEC"
 
 
+class ScreenshotNotReadyError(RuntimeError):
+    """The device has not finished its first display mirror refresh."""
+
+
 class SerialConnection(Protocol):
     """The subset of pyserial used for one screenshot request."""
 
@@ -116,6 +120,8 @@ def validate_header(header: bytes) -> int:
         raise RuntimeError("The screenshot response has invalid magic")
     if version != VERSION:
         raise RuntimeError(f"The screenshot response has unsupported version {version}")
+    if status == 1:
+        raise ScreenshotNotReadyError("The device display mirror is not ready")
     if status != 0:
         raise RuntimeError(f"The device refused the screenshot request with status {status}")
     if header_length != HEADER_LENGTH:
@@ -131,9 +137,9 @@ def validate_header(header: bytes) -> int:
     return expected_crc
 
 
-def read_frame(connection: SerialConnection) -> bytes:
+def read_frame(connection: SerialConnection, deadline: float | None = None) -> bytes:
     """Read and validate one framed screenshot response from a noisy serial stream."""
-    deadline = time.monotonic() + FRAME_TIMEOUT_SECONDS
+    deadline = time.monotonic() + FRAME_TIMEOUT_SECONDS if deadline is None else deadline
     buffer = bytearray()
     skipped = 0
 
@@ -240,12 +246,20 @@ def screenshot(path: Path, factory: Callable[[], SerialConnection]) -> None:
     if path.exists():
         raise RuntimeError(f"The output file already exists: {path}")
     connection = open_serial(factory)
+    deadline = time.monotonic() + FRAME_TIMEOUT_SECONDS
     try:
         connection.reset_input_buffer()
-        if connection.write(b"s") != 1:
-            raise RuntimeError("Could not send the screenshot request")
-        connection.flush()
-        write_png(path, read_frame(connection))
+        while True:
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Timed out while waiting for a complete screenshot frame")
+            if connection.write(b"s") != 1:
+                raise RuntimeError("Could not send the screenshot request")
+            connection.flush()
+            try:
+                write_png(path, read_frame(connection, deadline))
+                return
+            except ScreenshotNotReadyError:
+                time.sleep(0.1)
     finally:
         connection.close()
 
