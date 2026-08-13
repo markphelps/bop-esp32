@@ -9,6 +9,19 @@ It shows the current track and sends touch controls to Spotify. It does not play
     <img src="./images/spotify.png" alt="Launch in Spotify" width=368 height=448 />
 </p>
 
+## Touch controls
+
+Use these gestures on the Bop screen:
+
+| Gesture | Action |
+| --- | --- |
+| Swipe left | Previous track ⏮️ |
+| Swipe right | Next track ⏭️ |
+| Short press | Play or pause ▶️ / ⏸️ |
+| Long press | Show the Spotify screen with a QR code for the current track 🎵 |
+
+Tap the Spotify screen to return to the current track.
+
 ## Project status
 
 Bop is source software for personal experimentation. It is not an official Spotify product.
