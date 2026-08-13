@@ -11,7 +11,11 @@ target-version = "py313"
 
 # Ruff also formats the Python code blocks inside Markdown files. The documents
 # are written for a reader, not for the formatter, so they stay out of scope.
+# `force-exclude` holds that for a named file too. Without it the exclusion
+# covers only a directory argument, and `ruff format EULA.md` would rewrite the
+# document.
 extend-exclude = ["*.md"]
+force-exclude = true
 
 [tool.ruff.lint]
 # `E4`, `E7`, `E9`, and `F` are the Ruff defaults. The other three record rules

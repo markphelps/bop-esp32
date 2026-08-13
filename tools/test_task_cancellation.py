@@ -49,9 +49,15 @@ def test_run_idf_cancels_child() -> None:
         bin_dir.mkdir()
         (root / "export.sh").write_text('export PATH="$FAKE_BIN:$PATH"\n', encoding="utf-8")
 
+        # The fake idf.py installs its trap, then reports that it is ready. The
+        # test waits for that file instead of a fixed delay. A delay short
+        # enough to keep the test fast is also short enough to lose the race on
+        # a loaded machine, and the signal then arrives before the trap.
+        ready = root / "ready"
         fake_idf = bin_dir / "idf.py"
         fake_idf.write_text(
-            "#!/bin/sh\ntrap 'exit 130' INT\nwhile :; do sleep 1; done\n", encoding="utf-8"
+            f"#!/bin/sh\ntrap 'exit 130' INT\n: > '{ready}'\nwhile :; do sleep 1; done\n",
+            encoding="utf-8",
         )
         fake_idf.chmod(0o755)
 
@@ -65,7 +71,11 @@ def test_run_idf_cancels_child() -> None:
             text=True,
             start_new_session=True,
         )
-        time.sleep(0.4)
+        deadline = time.monotonic() + 30
+        while not ready.exists():
+            assert process.poll() is None, "the fake idf.py stopped before it was ready"
+            assert time.monotonic() < deadline, "the fake idf.py never reported that it was ready"
+            time.sleep(0.02)
         os.killpg(process.pid, signal.SIGINT)
         _, stderr = process.communicate(timeout=10)
 
