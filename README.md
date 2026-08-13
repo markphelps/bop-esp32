@@ -9,6 +9,8 @@ It shows the current track and sends touch controls to Spotify. It does not play
     <img src="./images/spotify.png" alt="Launch in Spotify" width=368 height=448 />
 </p>
 
+[See Bop in action on X.](https://x.com/mark_a_phelps/status/2087217997429571717?s=20)
+
 ## Touch controls
 
 Use these gestures on the Bop screen:
