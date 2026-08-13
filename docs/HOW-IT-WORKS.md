@@ -83,6 +83,16 @@ The AXP2101 monitor detects battery power. After 30 seconds without touch input,
 
 A touch restores 85 percent brightness. USB power does not activate the idle-dimming rule.
 
+## Screen capture
+
+`mise run screenshot -- <output.png>` saves the live Bop screen as a 368×448 PNG file.
+
+The AMOLED panel is write-only, so the firmware cannot read pixels back from it. Instead, the display flush copies each completed rectangle into a PSRAM image of the screen. A USB serial task sends that image, with a header and a CRC, and the host tool writes the PNG.
+
+Close `mise run monitor` before a capture. The capture needs the USB serial port for itself. The command refuses an output file that already exists.
+
+The capture works in every screen state, the provisioning screen included, because the serial task starts before the credential check. The capture does not reset the board, and playback continues.
+
 ## mise tasks
 
 Run `mise install` first. It installs the pinned host tools and then runs `mise run setup`.
@@ -100,6 +110,7 @@ Run `mise install` first. It installs the pinned host tools and then runs `mise 
 | `mise run flash-perf` | Flashes performance firmware after a credential-free backup. |
 | `mise run monitor` | Opens the normal-firmware serial monitor. |
 | `mise run monitor-perf` | Opens the performance-firmware serial monitor. |
+| `mise run screenshot -- <output.png>` | Saves the live Bop screen as a PNG file. |
 | `mise run test-host` | Runs host-side checks without a board. |
 | `mise run format` | Formats the host Python files with Ruff. |
 | `mise run format-check` | Checks host Python formatting without changes. |

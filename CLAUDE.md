@@ -27,6 +27,7 @@ mise install            # install Python, esptool, gitleaks, ruff, cmake, ninja,
 mise run build          # build firmware into firmware/build
 mise run flash          # flash the firmware (needs a factory backup first)
 mise run monitor        # open the serial monitor
+mise run screenshot -- shot.png   # save the live Bop screen as a PNG; close the monitor first
 mise run test-host      # run every host check, no board necessary
 mise run format         # Ruff format over every Python file
 mise run format-check   # Ruff format check that changes no file

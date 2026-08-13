@@ -62,6 +62,20 @@ precedence = "override"
 SPDX-FileCopyrightText = "2026 Mark Phelps"
 SPDX-License-Identifier = "Apache-2.0"
 
+# Captures of the Bop screen for the README, taken with `mise run screenshot`.
+# A PNG file cannot hold an SPDX header. The holder named here owns the
+# captures, not everything inside them: the Spotify logo and the album art
+# stay the property of their owners. THIRD_PARTY_LICENSES.md records the
+# Spotify trademark.
+[[annotations]]
+path = [
+  "images/mxpx.png",
+  "images/spotify.png",
+]
+precedence = "override"
+SPDX-FileCopyrightText = "2026 Mark Phelps"
+SPDX-License-Identifier = "Apache-2.0"
+
 # Montserrat, and the LVGL bitmap font built from it. Both stay under the SIL
 # Open Font License. See THIRD_PARTY_LICENSES.md.
 [[annotations]]
