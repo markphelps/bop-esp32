@@ -183,6 +183,13 @@ static void refresh_timer(lv_timer_t *timer)
 static bool request_refresh(void)
 {
     xSemaphoreTakeRecursive(mirror_mutex, portMAX_DELAY);
+    // A render that finishes after an earlier wait timed out leaves its
+    // notification behind. Without this drain the next wait takes that stale
+    // notification and reports a mirror that no render has written yet, so the
+    // board answers not-ready for every later capture. The render callbacks
+    // hold this mutex from LV_EVENT_RENDER_START to LV_EVENT_RENDER_READY, so
+    // no render can post between the drain and the request below.
+    ulTaskNotifyTake(pdTRUE, 0);
     mirror_ready = false;
     refresh_requested = true;
     xSemaphoreGiveRecursive(mirror_mutex);
