@@ -60,7 +60,17 @@ def make_sure_checkout_is_pinned(destination: Path) -> None:
         )
 
     run(
-        ["git", "-C", str(destination), "submodule", "update", "--init", "--recursive", "--depth", "1"]
+        [
+            "git",
+            "-C",
+            str(destination),
+            "submodule",
+            "update",
+            "--init",
+            "--recursive",
+            "--depth",
+            "1",
+        ]
     )
 
 
@@ -80,6 +90,15 @@ def install_tools(destination: Path) -> None:
 
 
 def main() -> int:
+    # `mise install` runs this script through the postinstall hook, so every job
+    # that wants one pinned host tool would otherwise clone ESP-IDF and its
+    # submodules first. The host-tool, style, secret, and license jobs never
+    # build the firmware, and the firmware job uses the official ESP-IDF
+    # container instead of this checkout.
+    if os.environ.get("BOP_SKIP_IDF") == "1":
+        print("BOP_SKIP_IDF=1. The ESP-IDF install is skipped, so no firmware build is possible.")
+        return 0
+
     destination = idf_path()
     try:
         if not destination.exists():

@@ -6,7 +6,6 @@
 
 from pathlib import Path
 
-
 SOURCE = Path(__file__).resolve().parent.parent / "firmware/main/app_main.c"
 
 

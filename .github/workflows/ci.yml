@@ -1,0 +1,116 @@
+# SPDX-FileCopyrightText: 2026 Mark Phelps
+# SPDX-License-Identifier: Apache-2.0
+
+# The five jobs below are the required checks for a pull request: firmware,
+# host-tools (linux), python-style, secrets, and licenses.
+#
+# The four host jobs run the same mise tasks a contributor runs on their own
+# machine, from the tool versions that mise.toml pins. The firmware job is the
+# exception. It builds in the official ESP-IDF container instead of the local
+# ESP-IDF checkout, so it runs `idf.py` directly and not `mise run build`.
+#
+# Every action is pinned to a commit SHA, and the container to an image digest,
+# with the release name in a comment. A tag can move to another commit or
+# image. A commit SHA and a digest cannot.
+#
+# No job uploads a firmware binary, a build directory, or a release artifact.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Read-only by default. No job writes to the repository or to a package.
+permissions:
+  contents: read
+
+# A new commit cancels the earlier run of the same pull request. A push to main
+# is never canceled, because a canceled run leaves that commit without a result.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # `mise install` starts the postinstall hook, which installs ESP-IDF. Only
+  # the firmware job builds the firmware, and it uses the ESP-IDF container
+  # instead. Without this value each host job would clone ESP-IDF and its
+  # submodules before it could run one host tool.
+  BOP_SKIP_IDF: "1"
+
+jobs:
+  firmware:
+    name: firmware
+    runs-on: ubuntu-latest
+    # The release in the comment must stay equal to IDF_TAG in
+    # tools/setup_idf.py. tools/test_ci.py holds the two together.
+    container: espressif/idf@sha256:a9231d0697ab8f7517cc072e93b7c83e04907bfbfba80b6440d7dbbf90665cf2 # v5.5.5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build the firmware
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh" > /dev/null
+          idf.py -C firmware build
+
+      - name: Make sure that the build used the committed dependency lock
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git diff --exit-code -- firmware/dependencies.lock
+
+  host-tools:
+    name: host-tools (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
+        with:
+          version: 2026.8.5
+      - run: mise run test-host
+
+  python-style:
+    name: python-style
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
+        with:
+          version: 2026.8.5
+      - run: mise run format-check
+      - run: mise run lint
+
+  secrets:
+    name: secrets
+    runs-on: ubuntu-latest
+    steps:
+      # The history scan reads every branch and tag, so it needs the complete
+      # history. The default shallow checkout would hide most of it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
+        with:
+          version: 2026.8.5
+      - run: mise run secrets
+
+  licenses:
+    name: licenses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
+        with:
+          version: 2026.8.5
+      - run: mise run licenses

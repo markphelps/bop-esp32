@@ -6,13 +6,13 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import hashlib
 import json
+from pathlib import Path
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
-from pathlib import Path
 
 from detect_port import esptool_python
 
@@ -291,9 +291,7 @@ def verify_backup_image(image: Path, checksum: Path) -> str:
 
 def probe_device_credentials(port: str) -> list[str]:
     """Read only the device NVS region and report which credential keys it holds."""
-    result = run_esptool_python(
-        PROBE_NVS_COMMAND, [port, NVS_OFFSET, NVS_SIZE, *CREDENTIAL_KEYS]
-    )
+    result = run_esptool_python(PROBE_NVS_COMMAND, [port, NVS_OFFSET, NVS_SIZE, *CREDENTIAL_KEYS])
     if result.returncode != 0:
         raise command_error(result, "The NVS credential probe failed")
     payload = marker_payload(result, NVS_PROBE_MARKER, "The NVS credential probe")

@@ -16,7 +16,6 @@ from unittest.mock import patch
 
 import provision
 
-
 ROOT = Path(__file__).resolve().parent.parent
 
 

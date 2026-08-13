@@ -69,7 +69,13 @@ def main() -> int:
                 raise
             warn_incomplete_flash("Canceled during the flash write.")
             raise SystemExit(130)
-        except (EOFError, OSError, RuntimeError, subprocess.CalledProcessError, ValueError) as error:
+        except (
+            EOFError,
+            OSError,
+            RuntimeError,
+            subprocess.CalledProcessError,
+            ValueError,
+        ) as error:
             print(f"restore failed: {error}", file=sys.stderr)
             if started.exists():
                 # Exit 2 separates "the flash may be incomplete" from every

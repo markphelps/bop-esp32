@@ -41,7 +41,17 @@ def require_unprovisioned_device(port: str) -> None:
 
 def read_full_flash(port: str, esptool: str, temporary: Path) -> None:
     subprocess.run(
-        [esptool, "--chip", "esp32s3", "--port", port, "read-flash", "0x0", FLASH_SIZE, str(temporary)],
+        [
+            esptool,
+            "--chip",
+            "esp32s3",
+            "--port",
+            port,
+            "read-flash",
+            "0x0",
+            FLASH_SIZE,
+            str(temporary),
+        ],
         check=True,
     )
 

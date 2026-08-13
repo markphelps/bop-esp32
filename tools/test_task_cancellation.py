@@ -19,7 +19,6 @@ from unittest.mock import patch
 
 import backup_flash
 
-
 ROOT = Path(__file__).resolve().parent.parent
 MONITOR_CONFIG = ROOT / "tools" / "esp-idf-monitor.cfg"
 
@@ -29,7 +28,10 @@ def test_monitor_tasks_use_ctrl_c() -> None:
         tasks = tomllib.load(source)["tasks"]
 
     for name in ("monitor", "monitor-perf"):
-        assert tasks[name]["env"]["ESP_IDF_MONITOR_CFGFILE"] == "{{config_root}}/tools/esp-idf-monitor.cfg"
+        assert (
+            tasks[name]["env"]["ESP_IDF_MONITOR_CFGFILE"]
+            == "{{config_root}}/tools/esp-idf-monitor.cfg"
+        )
 
     config = configparser.ConfigParser()
     assert config.read(MONITOR_CONFIG) == [str(MONITOR_CONFIG)]
@@ -48,7 +50,9 @@ def test_run_idf_cancels_child() -> None:
         (root / "export.sh").write_text('export PATH="$FAKE_BIN:$PATH"\n', encoding="utf-8")
 
         fake_idf = bin_dir / "idf.py"
-        fake_idf.write_text("#!/bin/sh\ntrap 'exit 130' INT\nwhile :; do sleep 1; done\n", encoding="utf-8")
+        fake_idf.write_text(
+            "#!/bin/sh\ntrap 'exit 130' INT\nwhile :; do sleep 1; done\n", encoding="utf-8"
+        )
         fake_idf.chmod(0o755)
 
         environment = os.environ | {"FAKE_BIN": str(bin_dir), "BOP_IDF_PATH": str(root)}
