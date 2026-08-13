@@ -22,7 +22,6 @@ from device import (
     command_error,
     detect_usb_port,
     marker_payload,
-    project_root,
     run_esptool_python,
 )
 
@@ -74,7 +73,9 @@ def inspect_bop_device(loader, table_offset, table_size, nvs_offset, nvs_size, a
         raise SystemExit("The connected device is not running Bop firmware")
     return ":".join(f"{byte:02x}" for byte in loader.read_mac("BASE_MAC"))
 """
-INSPECT_DEVICE_COMMAND = DEVICE_VALIDATION_SOURCE + r"""
+INSPECT_DEVICE_COMMAND = (
+    DEVICE_VALIDATION_SOURCE
+    + r"""
 import json
 import sys
 import esptool
@@ -91,7 +92,10 @@ mac = inspect_bop_device(
 )
 print("BOP_DEVICE_IDENTITY=" + json.dumps({"mac": mac, "port": port}, sort_keys=True))
 """
-ERASE_VERIFIED_DEVICE_COMMAND = DEVICE_VALIDATION_SOURCE + r"""
+)
+ERASE_VERIFIED_DEVICE_COMMAND = (
+    DEVICE_VALIDATION_SOURCE
+    + r"""
 import sys
 import esptool
 
@@ -117,6 +121,7 @@ if any(byte != 0xFF for byte in image):
     raise SystemExit("NVS read-back contains data after erase")
 loader.hard_reset()
 """
+)
 
 
 def inspect_device(port: str) -> DeviceIdentity:
@@ -162,7 +167,9 @@ def require_erase_approval(identity: DeviceIdentity) -> None:
     print(f"Bop device: port {identity.port}, MAC {identity.mac}")
     approval = f"ERASE {identity.mac}"
     if input(f"Type {approval} to erase this device's credential partition: ") != approval:
-        raise RuntimeError("Deprovisioning stopped. The device credential partition was not erased.")
+        raise RuntimeError(
+            "Deprovisioning stopped. The device credential partition was not erased."
+        )
 
 
 def erase_verified_device(identity: DeviceIdentity) -> None:

@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: 2026 Mark Phelps
+# SPDX-License-Identifier: Apache-2.0
+
+# Ruff is the only Python tool this file configures. The host tools are plain
+# scripts that the mise tasks start, not an installable package, so there is no
+# build backend and no project metadata here.
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+# Ruff also formats the Python code blocks inside Markdown files. The documents
+# are written for a reader, not for the formatter, so they stay out of scope.
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+# `E4`, `E7`, `E9`, and `F` are the Ruff defaults. The other three record rules
+# the host tools already follow: sorted imports (`I`), current Python syntax
+# (`UP`), and standard names (`N`).
+#
+# The `E5` group stays outside that list, so `E501` (line too long) is off.
+# That is what Ruff recommends beside its formatter. The formatter already
+# holds code to the line length above. What `E501` adds is a complaint about
+# the long lines inside the inline esptool source strings in `tools/device.py`
+# and `tools/deprovision.py`. No formatter can wrap those lines, and they must
+# stay readable as Python source of their own.
+select = ["E4", "E7", "E9", "F", "I", "UP", "N"]
+
+[tool.ruff.lint.isort]
+# The tools sort every import by module name, whether the line starts with
+# `import` or with `from`. Without this option Ruff moves every `from` import
+# below every `import`, and reorders every file in the repository.
+force-sort-within-sections = true
+
+[tool.ruff.format]
+docstring-code-format = true

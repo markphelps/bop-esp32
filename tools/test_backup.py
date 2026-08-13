@@ -34,7 +34,7 @@ def subprocess_result(returncode: int, stdout: str = "", stderr: str = "") -> ob
 
 def flash_image(keys: tuple[str, ...] = (), size: int = device.FLASH_SIZE_BYTES) -> bytes:
     """Build a flash image whose NVS region holds the named credential keys."""
-    body = bytearray(b"\xFF" * size)
+    body = bytearray(b"\xff" * size)
     position = NVS_OFFSET
     for key in keys:
         encoded = key.encode("ascii")
@@ -43,7 +43,9 @@ def flash_image(keys: tuple[str, ...] = (), size: int = device.FLASH_SIZE_BYTES)
     return bytes(body)
 
 
-def write_backup(directory: Path, image_bytes: bytes, digest: str | None = None) -> tuple[Path, Path]:
+def write_backup(
+    directory: Path, image_bytes: bytes, digest: str | None = None
+) -> tuple[Path, Path]:
     image = directory / "factory.bin"
     checksum = directory / "factory.bin.sha256"
     image.write_bytes(image_bytes)
@@ -72,7 +74,9 @@ def run_backup_main(root: Path, **replacements: Mock) -> tuple[int, dict[str, Mo
     return result, actions, errors.getvalue()
 
 
-def run_restore_main(root: Path, inputs: list[str], **replacements: Mock) -> tuple[int, dict[str, Mock]]:
+def run_restore_main(
+    root: Path, inputs: list[str], **replacements: Mock
+) -> tuple[int, dict[str, Mock]]:
     actions: dict[str, Mock] = {
         "project_root": Mock(return_value=root),
         "detect_usb_port": Mock(return_value=USB_PORT),
@@ -107,7 +111,9 @@ def test_probe_reads_only_the_nvs_region() -> None:
 def test_probe_reports_each_credential_key() -> None:
     esptool = ModuleType("esptool")
     loader = Mock()
-    loader.read_flash = Mock(return_value=flash_image(device.CREDENTIAL_KEYS)[NVS_OFFSET : NVS_OFFSET + NVS_SIZE])
+    loader.read_flash = Mock(
+        return_value=flash_image(device.CREDENTIAL_KEYS)[NVS_OFFSET : NVS_OFFSET + NVS_SIZE]
+    )
     setattr(esptool, "detect_chip", Mock(return_value=Mock(run_stub=Mock(return_value=loader))))
     arguments = ["probe", USB_PORT, "0x9000", "0x6000", *device.CREDENTIAL_KEYS]
     output = StringIO()
@@ -152,7 +158,10 @@ def test_unprovisioned_device_produces_a_verified_backup() -> None:
         image = root / "backups/factory.bin"
         checksum = root / "backups/factory.bin.sha256"
         assert image.stat().st_size == device.FLASH_SIZE_BYTES
-        assert checksum.read_text(encoding="ascii").split()[0] == hashlib.sha256(image_bytes).hexdigest()
+        assert (
+            checksum.read_text(encoding="ascii").split()[0]
+            == hashlib.sha256(image_bytes).hexdigest()
+        )
         assert not (root / "backups/factory.bin.partial").exists()
 
 
@@ -227,7 +236,7 @@ def test_image_scan_reads_only_the_nvs_region() -> None:
 def test_short_image_is_refused_rather_than_read_as_clean() -> None:
     with tempfile.TemporaryDirectory() as name:
         image = Path(name) / "short.bin"
-        image.write_bytes(b"\xFF" * (NVS_OFFSET + NVS_SIZE - 1))
+        image.write_bytes(b"\xff" * (NVS_OFFSET + NVS_SIZE - 1))
         try:
             device.credential_keys_in_image(image)
         except RuntimeError as error:
@@ -292,7 +301,9 @@ def test_restore_writes_only_after_approval() -> None:
     assert result == 0
     digest = hashlib.sha256(flash_image()).hexdigest()
     actions["write_verified_flash"].assert_called_once()
-    called_identity, called_image, called_digest, started = actions["write_verified_flash"].call_args.args
+    called_identity, called_image, called_digest, started = actions[
+        "write_verified_flash"
+    ].call_args.args
     assert (called_identity, called_image, called_digest) == (IDENTITY, image, digest)
     assert started.name == "write-started"
 
@@ -700,7 +711,9 @@ def test_no_override_permits_a_provisioned_backup_or_restore() -> None:
         prompts += [
             node
             for node in ast.walk(tree)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "input"
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "input"
         ]
     assert len(prompts) == 1, (
         "backup, restore, and device take exactly one approval prompt between them. "

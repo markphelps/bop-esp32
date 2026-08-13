@@ -42,7 +42,9 @@ NVS_SIZE = "0x6000"
 # screen. test_provision.py holds the two sides together.
 NVS_NAMESPACE = "bop"
 LEGAL_DOCUMENTS = ("EULA.md", "PRIVACY.md")
-LEGAL_AGREEMENT_PROMPT = "Type I AGREE to accept EULA.md and PRIVACY.md before Spotify authorization: "
+LEGAL_AGREEMENT_PROMPT = (
+    "Type I AGREE to accept EULA.md and PRIVACY.md before Spotify authorization: "
+)
 
 
 def project_root() -> Path:
@@ -61,7 +63,9 @@ def print_legal_documents() -> None:
 def require_legal_agreement() -> None:
     print_legal_documents()
     if input(LEGAL_AGREEMENT_PROMPT) != "I AGREE":
-        raise RuntimeError("Provisioning stopped. Type I AGREE exactly to start Spotify authorization.")
+        raise RuntimeError(
+            "Provisioning stopped. Type I AGREE exactly to start Spotify authorization."
+        )
 
 
 def command_output(command: list[str]) -> str:
@@ -112,7 +116,9 @@ def prompt_value(label: str, default: str = "", *, secret: bool = False) -> str:
     return value or default
 
 
-def make_sure_value_fits(label: str, value: str, maximum_bytes: int, *, allow_empty: bool = False) -> None:
+def make_sure_value_fits(
+    label: str, value: str, maximum_bytes: int, *, allow_empty: bool = False
+) -> None:
     length = len(value.encode("utf-8"))
     if (not allow_empty and length == 0) or length > maximum_bytes:
         raise ValueError(f"{label} must contain 1 to {maximum_bytes} UTF-8 bytes")
@@ -152,7 +158,11 @@ class CallbackHandler(BaseHTTPRequestHandler):
             server.result = {"error": "Spotify did not return an authorization code"}
 
         successful = "code" in server.result
-        message = "Authorization complete. You can close this page." if successful else "Authorization failed. Return to the terminal."
+        message = (
+            "Authorization complete. You can close this page."
+            if successful
+            else "Authorization failed. Return to the terminal."
+        )
         body = f"<!doctype html><meta charset=utf-8><title>bop</title><p>{message}</p>".encode()
         self.send_response(HTTPStatus.OK if successful else HTTPStatus.BAD_REQUEST)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -166,7 +176,11 @@ class CallbackHandler(BaseHTTPRequestHandler):
 
 def authorize(client_id: str, redirect_uri: str, port: int) -> str:
     verifier = base64.urlsafe_b64encode(secrets.token_bytes(64)).rstrip(b"=").decode("ascii")
-    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest()).rstrip(b"=").decode("ascii")
+    challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest())
+        .rstrip(b"=")
+        .decode("ascii")
+    )
     state = secrets.token_urlsafe(32)
     parameters = urlencode(
         {
@@ -257,11 +271,15 @@ def generate_nvs(csv_path: Path, image_path: Path) -> None:
     generator = root / "components/nvs_flash/nvs_partition_generator/nvs_partition_gen.py"
     arguments = [str(generator), "generate", str(csv_path), str(image_path), NVS_SIZE]
     if os.name == "nt":
-        command = f'call "{root / "export.bat"}" >nul && python {subprocess.list2cmdline(arguments)}'
+        command = (
+            f'call "{root / "export.bat"}" >nul && python {subprocess.list2cmdline(arguments)}'
+        )
         subprocess.run(["cmd.exe", "/d", "/s", "/c", command], check=True)
     else:
         script = '. "$1" >/dev/null && shift && exec python "$@"'
-        subprocess.run(["bash", "-c", script, "idf-wrapper", str(root / "export.sh"), *arguments], check=True)
+        subprocess.run(
+            ["bash", "-c", script, "idf-wrapper", str(root / "export.sh"), *arguments], check=True
+        )
     image_path.chmod(0o600)
     expected_size = int(NVS_SIZE, 0)
     if image_path.stat().st_size != expected_size:
@@ -283,7 +301,18 @@ def flash_nvs(image_path: Path) -> None:
     if esptool is None:
         raise RuntimeError("esptool is unavailable. Run `mise install` first")
     subprocess.run(
-        [esptool, "--chip", "esp32s3", "--port", detect_port(), "--after", "hard-reset", "write-flash", NVS_OFFSET, str(image_path)],
+        [
+            esptool,
+            "--chip",
+            "esp32s3",
+            "--port",
+            detect_port(),
+            "--after",
+            "hard-reset",
+            "write-flash",
+            NVS_OFFSET,
+            str(image_path),
+        ],
         check=True,
     )
 
@@ -314,7 +343,14 @@ def main() -> int:
             generate_nvs(csv_path, image_path)
             flash_nvs(image_path)
         print("Provisioning is complete. The device has restarted.")
-    except (EOFError, OSError, RuntimeError, TimeoutError, ValueError, subprocess.CalledProcessError) as error:
+    except (
+        EOFError,
+        OSError,
+        RuntimeError,
+        TimeoutError,
+        ValueError,
+        subprocess.CalledProcessError,
+    ) as error:
         print(f"provisioning failed: {error}", file=sys.stderr)
         return 1
     return 0

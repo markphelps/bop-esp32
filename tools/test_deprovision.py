@@ -10,7 +10,6 @@ from contextlib import redirect_stderr, redirect_stdout
 import hashlib
 from io import StringIO
 import os
-from pathlib import Path
 import re
 import struct
 import sys
@@ -19,7 +18,7 @@ from unittest.mock import Mock, patch
 
 import deprovision
 import detect_port
-
+import device
 
 USB_PORT = "/dev/usb-port"
 MAC = "02:00:00:00:00:01"
@@ -120,8 +119,7 @@ def test_port_override_must_identify_an_espressif_usb_device() -> None:
 def test_device_inspection_uses_bop_identity_checks() -> None:
     result = subprocess_result(
         0,
-        f'esptool output\n{deprovision.IDENTITY_MARKER}'
-        f'{{"mac": "{MAC}", "port": "{USB_PORT}"}}\n',
+        f'esptool output\n{deprovision.IDENTITY_MARKER}{{"mac": "{MAC}", "port": "{USB_PORT}"}}\n',
     )
     runner = Mock(return_value=result)
     with patch.object(deprovision, "run_esptool_python", runner):
@@ -168,8 +166,8 @@ def bop_partition_table() -> bytes:
             partition_entry("factory", 0, 0, 0x10000, 0x800000),
         ]
     )
-    digest = b"\xEB\xEB" + b"\xFF" * 14 + hashlib.md5(entries).digest()
-    return (entries + digest + b"\xFF" * 32).ljust(0x1000, b"\xFF")
+    digest = b"\xeb\xeb" + b"\xff" * 14 + hashlib.md5(entries).digest()
+    return (entries + digest + b"\xff" * 32).ljust(0x1000, b"\xff")
 
 
 def app_description() -> bytes:
@@ -184,7 +182,7 @@ class FakeLoader:
 
     def __init__(self, mac: str = MAC, nvs_image: bytes | None = None) -> None:
         self.mac = tuple(int(part, 16) for part in mac.split(":"))
-        self.nvs_image = nvs_image if nvs_image is not None else b"\xFF" * 0x6000
+        self.nvs_image = nvs_image if nvs_image is not None else b"\xff" * 0x6000
         self.erase_region = Mock()
         self.hard_reset = Mock()
 
@@ -220,7 +218,7 @@ def run_erase_command(loader: FakeLoader, expected_mac: str = MAC) -> None:
 
 
 def test_firmware_check_matches_the_cmake_project_name() -> None:
-    source = (deprovision.project_root() / "firmware/CMakeLists.txt").read_text(encoding="utf-8")
+    source = (device.project_root() / "firmware/CMakeLists.txt").read_text(encoding="utf-8")
     match = re.search(r"^\s*project\(([^)\s]+)\)", source, re.MULTILINE)
     assert match is not None, "firmware/CMakeLists.txt does not name a project"
     project_name = match.group(1)
@@ -231,7 +229,7 @@ def test_firmware_check_matches_the_cmake_project_name() -> None:
 def test_erase_region_matches_partition_table() -> None:
     partition_line = next(
         line
-        for line in (deprovision.project_root() / "firmware/partitions.csv").read_text().splitlines()
+        for line in (device.project_root() / "firmware/partitions.csv").read_text().splitlines()
         if line.strip().startswith("nvs,")
     )
     fields = [field.strip() for field in partition_line.split(",")]
@@ -279,11 +277,11 @@ def test_partition_digest_mismatch_stops_before_erase() -> None:
 
 def test_readback_accepts_only_complete_erasure() -> None:
     bad_images = [
-        b"\xFF" * 20 + key.encode("ascii") + b"\xFF" * (0x6000 - 20 - len(key))
+        b"\xff" * 20 + key.encode("ascii") + b"\xff" * (0x6000 - 20 - len(key))
         for key in deprovision.CREDENTIAL_KEYS
     ]
-    bad_images.append(b"\xFF" * 64 + b"\x00" + b"\xFF" * (0x6000 - 65))
-    bad_images.append(b"\xFF" * (0x6000 - 1))
+    bad_images.append(b"\xff" * 64 + b"\x00" + b"\xff" * (0x6000 - 65))
+    bad_images.append(b"\xff" * (0x6000 - 1))
     for image in bad_images:
         loader = FakeLoader(nvs_image=image)
         try:
@@ -308,7 +306,7 @@ def test_device_operation_uses_one_esptool_process() -> None:
 
 
 def test_firmware_shows_provisioning_before_spotify_starts() -> None:
-    source = (deprovision.project_root() / "firmware/main/app_main.c").read_text(encoding="utf-8")
+    source = (device.project_root() / "firmware/main/app_main.c").read_text(encoding="utf-8")
     assert source.index('create_placeholder("run:\\nmise run provision")') < source.index(
         "if (!provisioned) {"
     )

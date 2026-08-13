@@ -34,7 +34,9 @@ def detect_port() -> str:
         )
     if len(ports) > 1:
         names = ", ".join(port.device for port in ports)
-        raise RuntimeError(f"More than one Espressif USB serial port was found: {names}. Set BOP_PORT.")
+        raise RuntimeError(
+            f"More than one Espressif USB serial port was found: {names}. Set BOP_PORT."
+        )
     return ports[0].device
 
 

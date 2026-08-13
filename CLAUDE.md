@@ -23,11 +23,14 @@ it stays wherever it means Spotify.
 ## Commands
 
 ```
-mise install            # install Python, esptool, gitleaks, cmake, ninja, ESP-IDF
+mise install            # install Python, esptool, gitleaks, ruff, cmake, ninja, ESP-IDF
 mise run build          # build firmware into firmware/build
 mise run flash          # flash the firmware (needs a factory backup first)
 mise run monitor        # open the serial monitor
 mise run test-host      # run every host check, no board necessary
+mise run format         # Ruff format over every Python file
+mise run format-check   # Ruff format check that changes no file
+mise run lint           # Ruff lint
 mise run licenses       # REUSE lint: every file needs a license and a holder
 mise run secrets        # gitleaks over tracked files and all branches and tags
 ```
@@ -42,10 +45,23 @@ use `mise run build-perf`, `flash-perf`, and `monitor-perf`.
 
 Set `BOP_PORT` when more than one Espressif board is connected. Set
 `BOP_IDF_PATH` to move the ESP-IDF checkout away from `~/.local/share/esp-idf`.
+`BOP_SKIP_IDF=1` makes the `mise install` hook skip the ESP-IDF install. CI sets
+it for every job, because no job there installs ESP-IDF from this checkout. In
+that environment, no firmware build is possible.
 
 The firmware needs the real board. There is no host build and no emulator, so
-`mise run test-host` and a careful read are the only checks available without
-hardware.
+`mise run test-host`, the firmware compile, and a careful read are the only
+checks available without hardware.
+
+## Continuous integration
+
+`.github/workflows/ci.yml` is the only workflow. It runs five required checks on
+each pull request: `firmware`, `host-tools (linux)`, `python-style`, `secrets`,
+and `licenses`. Each host job runs the matching local `mise` task, from the
+versions that `mise.toml` pins. The `firmware` job is the exception: it runs
+`idf.py` inside the official ESP-IDF container, whose release must stay equal to
+`IDF_TAG` in `tools/setup_idf.py`. CI is Linux only. macOS is tested locally on
+the board, and Windows is not tested.
 
 ## Firmware architecture
 
@@ -143,15 +159,17 @@ public functions. Comments explain why, not what.
 
 Python code uses `from __future__ import annotations`, the standard library
 only, `RuntimeError` messages that name the fix, and exit code 130 on
-`KeyboardInterrupt`.
+`KeyboardInterrupt`. Ruff owns the format and the lint rules, from
+`pyproject.toml`. Run `mise run format` before you send a change.
 
-Some host checks assert on the text of the firmware sources.
+Some host checks assert on the text of other sources.
 `test_display_recovery.py` reads `app_main.c`. `test_playback_feedback.py`
 reads `ui.c` and `spotify.c`. `test_deprovision.py` reads `app_main.c`,
 `firmware/CMakeLists.txt`, and `firmware/partitions.csv`. `test_provision.py`
-reads `credentials.c`. An edit to those files can turn the checks red even when
-the firmware is correct. Read the failing assertion, then decide whether the
-check or the code is wrong.
+reads `credentials.c`. `test_ci.py` reads `.github/workflows/ci.yml` and
+`tools/setup_idf.py`. An edit to those files can turn the checks red even when
+the code is correct. Read the failing assertion, then decide whether the check
+or the code is wrong.
 
 Every new file needs an SPDX header, or an entry in `REUSE.toml` when a header
 is impossible. `mise run licenses` is the check.

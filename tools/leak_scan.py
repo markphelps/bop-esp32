@@ -64,9 +64,7 @@ def scan(
     if report is not None:
         report = report.resolve()
         arguments = [*arguments, "--report-format", "json", "--report-path", str(report)]
-    result = subprocess.run(
-        [gitleaks(), *arguments, *REPORT_ARGUMENTS], check=False, cwd=cwd
-    )
+    result = subprocess.run([gitleaks(), *arguments, *REPORT_ARGUMENTS], check=False, cwd=cwd)
     if result.returncode == 0:
         return True
     if result.returncode == 2:
