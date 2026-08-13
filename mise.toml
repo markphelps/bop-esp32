@@ -71,9 +71,14 @@ depends = ["setup"]
 env = { ESP_IDF_MONITOR_CFGFILE = "{{config_root}}/tools/esp-idf-monitor.cfg", BOP_PERF_MONITOR = "1" }
 run = "python tools/run_idf.py -B build-perf monitor"
 
+[tasks.screenshot]
+description = "Save the current Bop screen as a PNG file"
+depends = ["setup"]
+run = "python tools/screenshot.py"
+
 [tasks.test-host]
 description = "Run host-side task checks without a board"
-run = "python tools/test_task_cancellation.py && python tools/test_provision.py && python tools/test_display_recovery.py && python tools/test_playback_feedback.py && python tools/test_deprovision.py && python tools/test_backup.py"
+run = "python tools/test_task_cancellation.py && python tools/test_provision.py && python tools/test_display_recovery.py && python tools/test_playback_feedback.py && python tools/test_deprovision.py && python tools/test_backup.py && python tools/test_screenshot.py"
 
 [tasks.format]
 description = "Format the host tools with Ruff"
