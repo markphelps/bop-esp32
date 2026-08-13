@@ -77,7 +77,7 @@ Read [INSTALL.md](INSTALL.md) and [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING
 The flash task needs a factory backup. On a provisioned board with no backup it
 stops, because it cannot take one safely. Read [INSTALL.md](INSTALL.md).
 
-The firmware shows a green `bop` label.
+An unprovisioned board shows a green `run: mise run provision` screen.
 
 Set `BOP_PORT` if more than one Espressif board is connected.
 

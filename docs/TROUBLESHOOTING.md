@@ -44,12 +44,16 @@ The provisioning command writes new WiFi and Spotify credentials to the Bop NVS 
 
 ## The board was set up before the name change
 
-Bop changed its NVS namespace and its firmware project name. Both values now use the product name. A board set up before that change shows one of two symptoms.
+Bop changed its NVS namespace, its firmware project name, and its environment variables. A board set up before that change shows one of two symptoms. A shell that sets the old variables needs an update too.
 
 **The board asks for provisioning again.** The firmware reads the credentials from the new namespace. The older provisioning command wrote them under the old name, so the firmware finds none.
 
 1. Connect the board with a USB data cable.
 2. Run `mise run provision`.
+
+`mise run provision` needs a factory backup. This board still holds the older credentials, so `mise run backup` refuses to take a new one. If you have no backup, use the steps below.
+
+Until you run `mise run provision` or `mise run deprovision`, the older credentials stay in flash. The firmware cannot read them, and they are still there.
 
 **The deprovision command does not recognize the firmware.** `mise run deprovision` reads the project name from the firmware image. An older image carries the old name, so the identity check stops.
 
@@ -75,3 +79,5 @@ If no factory backup exists, no command in this checkout will flash, provision, 
 Step 4 makes the board unprovisioned, so the backup in step 6 succeeds. That step reads all 16 MB from the board.
 
 CAUTION: Do not treat the step 6 backup as the factory image. It is the Bop flash with an erased credential partition. `mise run restore` accepts it, but it does not return the board to its shipped state. Read [INSTALL.md](../INSTALL.md).
+
+**The old environment variables stop working.** Bop reads `BOP_PORT`, `BOP_IDF_PATH`, and `BOP_PERF_MONITOR` now. The old names are ignored, and no command reports an error. Update every one of them that you set in a shell profile.

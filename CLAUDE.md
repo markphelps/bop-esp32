@@ -15,10 +15,10 @@ The repository holds two halves:
   provisions credentials, and runs the host checks. `mise` starts every tool.
 
 One name runs through every layer. The product is "Bop", the repository is
-`bop-esp32`, the ESP-IDF project is `bop`, and every environment variable
-starts with `BOP_`. Public firmware functions use the `bop_` prefix, and the
-capacity macros use `BOP_`. The name Spotify is the one exception, and it stays
-wherever it means Spotify.
+`bop-esp32`, the ESP-IDF project is `bop`, and every environment variable Bop
+defines starts with `BOP_`. Public firmware functions use the `bop_` prefix,
+and the capacity macros use `BOP_`. The name Spotify is the one exception, and
+it stays wherever it means Spotify.
 
 ## Commands
 
