@@ -31,6 +31,13 @@
 #define BOP_SCREENSHOT_PIXEL_FORMAT_RGB565_BE 1U
 #define BOP_SCREENSHOT_SERIAL_BUFFER_SIZE 4096U
 #define BOP_SCREENSHOT_SERIAL_WRITE_SIZE 1024U
+// One budget for a whole response, not one for each chunk. A healthy host
+// reads the 329728-byte payload in well under a second, and the host tool
+// gives a frame 30 seconds, so this value abandons only a host that stopped
+// reading. A per-chunk timeout of the same size would hold the serial mutex
+// for minutes across the 322 chunks of one payload, which is the fault this
+// budget exists to prevent.
+#define BOP_SCREENSHOT_SERIAL_BUDGET_MS 5000U
 #define BOP_SCREENSHOT_REFRESH_TIMER_MS 10U
 #define BOP_SCREENSHOT_REFRESH_TIMEOUT_MS 1000U
 #define BOP_SCREENSHOT_TASK_STACK_SIZE 4096U
@@ -84,7 +91,17 @@ static void make_header(uint8_t header[BOP_SCREENSHOT_HEADER_SIZE], uint8_t stat
     }
 }
 
-static bool write_serial_bytes(const uint8_t *source, size_t size)
+// What is left of one response budget that started at `start`. The subtraction
+// is unsigned, so it stays correct across a tick counter wrap. Zero means the
+// response is out of budget and the caller must abandon it.
+static TickType_t remaining_budget(TickType_t start)
+{
+    const TickType_t budget = pdMS_TO_TICKS(BOP_SCREENSHOT_SERIAL_BUDGET_MS);
+    const TickType_t elapsed = xTaskGetTickCount() - start;
+    return elapsed < budget ? budget - elapsed : 0;
+}
+
+static bool write_serial_bytes(const uint8_t *source, size_t size, TickType_t start)
 {
     size_t offset = 0;
     while (offset < size) {
@@ -92,7 +109,11 @@ static bool write_serial_bytes(const uint8_t *source, size_t size)
         size_t write_size = remaining < BOP_SCREENSHOT_SERIAL_WRITE_SIZE
             ? remaining
             : BOP_SCREENSHOT_SERIAL_WRITE_SIZE;
-        int written = usb_serial_jtag_write_bytes(source + offset, write_size, portMAX_DELAY);
+        TickType_t wait = remaining_budget(start);
+        if (wait == 0) {
+            return false;
+        }
+        int written = usb_serial_jtag_write_bytes(source + offset, write_size, wait);
         if (written <= 0) {
             return false;
         }
@@ -107,14 +128,22 @@ static bool send_response(uint8_t status, uint32_t crc)
     make_header(header, status, crc);
 
     xSemaphoreTake(serial_output_mutex, portMAX_DELAY);
-    bool sent = write_serial_bytes(header, sizeof(header));
+    // The clock starts after the mutex arrives, because the budget bounds how
+    // long this task holds the mutex. Every task that writes a log line waits
+    // behind it, so a host that stops reading in the middle of a frame must
+    // cost them this budget once and then get the mutex back.
+    const TickType_t start = xTaskGetTickCount();
+    bool sent = write_serial_bytes(header, sizeof(header), start);
     if (sent && status == BOP_SCREENSHOT_STATUS_SUCCESS) {
-        sent = write_serial_bytes(staging_buffer, BOP_SCREENSHOT_PAYLOAD_SIZE);
+        sent = write_serial_bytes(staging_buffer, BOP_SCREENSHOT_PAYLOAD_SIZE, start);
     }
     if (sent) {
-        sent = usb_serial_jtag_wait_tx_done(portMAX_DELAY) == ESP_OK;
+        sent = usb_serial_jtag_wait_tx_done(remaining_budget(start)) == ESP_OK;
     }
     xSemaphoreGive(serial_output_mutex);
+    // An abandoned frame leaves at most one transmit buffer of bytes behind.
+    // The host resets its input buffer before the next request and skips up to
+    // 65536 bytes before a header, so those bytes cannot damage a later frame.
     return sent;
 }
 
@@ -134,7 +163,10 @@ static void send_screenshot(void)
         xSemaphoreGiveRecursive(mirror_mutex);
     }
     if (!send_response(status, crc)) {
-        ESP_LOGW(TAG, "Screenshot response did not finish");
+        ESP_LOGW(
+            TAG,
+            "Screenshot abandoned after %ums because the host stopped reading",
+            (unsigned)BOP_SCREENSHOT_SERIAL_BUDGET_MS);
     }
 }
 

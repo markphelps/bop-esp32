@@ -118,14 +118,65 @@ def png_chunks(image: bytes) -> dict[bytes, bytes]:
     return chunks
 
 
+def firmware_source() -> str:
+    return (ROOT / "firmware/main/screenshot.c").read_text(encoding="utf-8")
+
+
+def firmware_function(name: str, following: str) -> str:
+    source = firmware_source()
+    start = source.index(name)
+    return source[start : source.index(following, start)]
+
+
 def test_firmware_uses_bounded_serial_writes() -> None:
-    source = (ROOT / "firmware/main/screenshot.c").read_text(encoding="utf-8")
+    source = firmware_source()
     assert "#define BOP_SCREENSHOT_SERIAL_WRITE_SIZE 1024U" in source
-    start = source.index("static bool write_serial_bytes")
-    end = source.index("static bool send_response", start)
-    writer = source[start:end]
+    assert "#define BOP_SCREENSHOT_SERIAL_BUDGET_MS" in source
+    writer = firmware_function("static bool write_serial_bytes", "static bool send_response")
     assert "write_size" in writer
-    assert "usb_serial_jtag_write_bytes(source + offset, write_size, portMAX_DELAY)" in writer
+    # Each chunk waits for what is left of the response budget, never forever.
+    assert "usb_serial_jtag_write_bytes(source + offset, write_size, wait)" in writer
+    assert "wait = remaining_budget(start)" in writer
+    assert "portMAX_DELAY" not in writer
+
+
+def test_one_serial_budget_covers_a_whole_screenshot_frame() -> None:
+    """The budget bounds the mutex hold, so it starts once for the whole frame.
+
+    A budget taken for each chunk still holds the serial output mutex for
+    minutes across the 322 chunks of one payload, and every task that writes a
+    log line waits behind that mutex.
+    """
+    response = firmware_function("static bool send_response", "static void send_screenshot")
+    assert response.count("xTaskGetTickCount()") == 1
+    assert response.index("xSemaphoreTake(serial_output_mutex, portMAX_DELAY)") < response.index(
+        "xTaskGetTickCount()"
+    )
+    assert response.count("write_serial_bytes(") == 2
+    assert response.count(", start)") == 2
+    assert "usb_serial_jtag_wait_tx_done(remaining_budget(start))" in response
+    # The mutex take is the only unbounded wait left in the response path.
+    assert response.count("portMAX_DELAY") == 1
+
+    budget = firmware_function(
+        "static TickType_t remaining_budget", "static bool write_serial_bytes"
+    )
+    assert "pdMS_TO_TICKS(BOP_SCREENSHOT_SERIAL_BUDGET_MS)" in budget
+    assert "elapsed < budget ? budget - elapsed : 0" in budget
+
+
+def test_an_abandoned_frame_releases_the_mutex_and_is_reported_once() -> None:
+    response = firmware_function("static bool send_response", "static void send_screenshot")
+    give = "xSemaphoreGive(serial_output_mutex);"
+    assert response.count(give) == 1
+    assert response.index("usb_serial_jtag_wait_tx_done") < response.index(give)
+    assert response.index(give) < response.index("return sent;")
+    assert "ESP_LOG" not in response
+
+    sender = firmware_function("static void send_screenshot", "static void handle_spotify_command")
+    assert sender.count("ESP_LOG") == 1
+    assert "if (!send_response(status, crc)) {" in sender
+    assert "abandoned" in sender
 
 
 def test_screenshot_refresh_runs_in_the_lvgl_task() -> None:
@@ -369,6 +420,8 @@ def test_main_requires_one_new_output_path() -> None:
 
 def main() -> int:
     test_firmware_uses_bounded_serial_writes()
+    test_one_serial_budget_covers_a_whole_screenshot_frame()
+    test_an_abandoned_frame_releases_the_mutex_and_is_reported_once()
     test_screenshot_refresh_runs_in_the_lvgl_task()
     test_refresh_timer_is_created_before_the_main_task_unlocks_lvgl()
     test_fragmented_frame_and_split_magic()
