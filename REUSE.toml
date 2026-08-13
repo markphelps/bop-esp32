@@ -40,6 +40,7 @@ SPDX-PackageDownloadLocation = "https://github.com/markphelps/bop-esp32"
 [[annotations]]
 path = [
   "README.md",
+  "CONTRIBUTING.md",
   "CLAUDE.md",
   "INSTALL.md",
   "EULA.md",

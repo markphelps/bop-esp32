@@ -57,6 +57,7 @@ If no backup exists, the task reads the credential partition first. It reads all
 - [INSTALL.md](INSTALL.md) gives the installation, update, removal, and factory-recovery procedures.
 - [docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md) explains the hardware, firmware, data flow, and every `mise` task.
 - [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) lists recovery steps for common device and provisioning problems.
+- [CONTRIBUTING.md](CONTRIBUTING.md) explains the contribution workflow, checks, and pull-request requirements.
 - [SECURITY.md](SECURITY.md) explains the security policy and the plaintext NVS credential risk.
 - [EULA.md](EULA.md) and [PRIVACY.md](PRIVACY.md) describe the terms and data use.
 - [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) lists third-party components and their licenses.
