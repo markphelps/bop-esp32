@@ -64,12 +64,15 @@ def run_idf(arguments: list[str]) -> int:
     ).returncode
 
 
-def main() -> int:
-    if len(sys.argv) < 2:
+def main(arguments: list[str] | None = None) -> int:
+    """Run idf.py. `tools/flash.py` passes its own arguments instead of `sys.argv`."""
+    if arguments is None:
+        arguments = sys.argv[1:]
+    if not arguments:
         print("usage: run_idf.py <idf.py arguments...>", file=sys.stderr)
         return 2
     try:
-        return run_idf(sys.argv[1:])
+        return run_idf(arguments)
     except (OSError, subprocess.CalledProcessError) as error:
         print(f"idf.py failed: {error}", file=sys.stderr)
         return 1

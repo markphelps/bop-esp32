@@ -25,7 +25,8 @@ it stays wherever it means Spotify.
 ```
 mise install            # install Python, esptool, gitleaks, ruff, cmake, ninja, ESP-IDF
 mise run build          # build firmware into firmware/build
-mise run flash          # flash the firmware (needs a factory backup first)
+mise run flash          # back up the factory image, then flash the firmware
+mise run flash -- --force   # flash without taking a backup; it warns and takes none
 mise run monitor        # open the serial monitor
 mise run screenshot -- shot.png   # save the live Bop screen as a PNG; close the monitor first
 mise run test-host      # run every host check, no board necessary
@@ -138,7 +139,19 @@ easier.
 
 - `backup_flash.py` reads the 24 KB NVS region first and refuses a full-flash
   backup of a provisioned device. No flag turns the refusal off.
-- `flash` and `provision` depend on `backup` in `mise.toml`.
+- `provision` depends on `backup` in `mise.toml`, because provisioning is the
+  last moment a credential-free factory image can be taken.
+- `flash` and `flash-perf` run `tools/flash.py`, which takes that backup itself
+  and then flashes. `mise run flash -- --force` skips the backup step and warns
+  in one line. The backup step moved out of `mise.toml` because mise runs a
+  `depends` entry whatever arguments follow the task. `--force` relaxes
+  recoverability only: the forced path never enters `backup_flash.py`, so it
+  cannot reach the refusal above, and skipping a backup is never taking one.
+  `tools/flash.py` owns two arguments and forwards every other one to `idf.py`
+  after the `flash` subcommand, where the old task put them. `--build-dir` is
+  how `flash-perf` names `build-perf`, because `-B` has to arrive before the
+  subcommand. Only the first `--force` is Bop's; a second one reaches
+  `idf.py flash --force`, which is a different flag.
 - `restore.py` checks size, digest, and a credential-free NVS region, then
   re-checks the file digest and the device MAC address inside
   `WRITE_VERIFIED_FLASH_COMMAND` after the user approves. Nothing between the

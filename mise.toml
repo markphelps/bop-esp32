@@ -48,16 +48,19 @@ description = "Remove Spotify access and erase device credentials through USB"
 depends = ["setup"]
 run = "python tools/deprovision.py"
 
+# `backup` is not a `depends` entry here. mise runs a `depends` entry whatever
+# arguments follow the task, so `--force` could never skip it from there.
+# `tools/flash.py` takes the backup itself, and only `--force` skips that step.
 [tasks.flash]
-description = "Back up the factory image, then flash the firmware"
-depends = ["setup", "backup"]
-run = "python tools/run_idf.py flash"
+description = "Back up the factory image, then flash the firmware (`-- --force` skips the backup)"
+depends = ["setup"]
+run = "python tools/flash.py"
 
 [tasks.flash-perf]
-description = "Flash the firmware with the LVGL FPS monitor"
-depends = ["setup", "backup"]
+description = "Flash the firmware with the LVGL FPS monitor (`-- --force` skips the backup)"
+depends = ["setup"]
 env = { BOP_PERF_MONITOR = "1" }
-run = "python tools/run_idf.py -B build-perf flash"
+run = "python tools/flash.py --build-dir build-perf"
 
 [tasks.monitor]
 description = "Open the serial monitor for the normal firmware"
