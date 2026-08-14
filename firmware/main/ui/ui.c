@@ -391,10 +391,13 @@ static void animate_swipe(int direction)
 
 static bool send_gesture_command(spotify_command_t command, uint32_t request_id)
 {
-    if (bop_spotify_enqueue_command(command, request_id)) {
+    spotify_command_submission_t submission = bop_spotify_enqueue_command(command, request_id);
+    if (submission == SPOTIFY_COMMAND_SUBMISSION_QUEUED) {
         return true;
     }
-    ESP_LOGW(TAG, "Spotify command queue is full");
+    if (submission == SPOTIFY_COMMAND_SUBMISSION_RATE_LIMITED && request_id != 0) {
+        show_feedback(LV_SYMBOL_WARNING);
+    }
     return false;
 }
 
@@ -695,10 +698,13 @@ static void process_command_results(void)
 {
     spotify_command_result_t result;
     while (bop_spotify_get_command_result(&result)) {
-        if (result.command == SPOTIFY_COMMAND_TOGGLE
-            && result.request_id != 0
-            && result.accepted) {
+        if (result.command != SPOTIFY_COMMAND_TOGGLE || result.request_id == 0) {
+            continue;
+        }
+        if (result.accepted) {
             show_feedback(result.was_playing ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
+        } else if (result.rate_limited) {
+            show_feedback(LV_SYMBOL_WARNING);
         }
     }
 }

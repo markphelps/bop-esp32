@@ -150,8 +150,9 @@ static void handle_spotify_command(uint8_t input)
     } else {
         return;
     }
-    if (bop_spotify_commands_ready() && !bop_spotify_enqueue_command(command, 0)) {
-        ESP_LOGW(TAG, "Command queue is full");
+    if (bop_spotify_commands_ready()
+        && bop_spotify_enqueue_command(command, 0) != SPOTIFY_COMMAND_SUBMISSION_QUEUED) {
+        ESP_LOGW(TAG, "Spotify command rejected");
     }
 }
 
