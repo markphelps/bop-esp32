@@ -75,8 +75,13 @@ credentials, then starts the rest. If NVS holds no credentials, the app shows a
 Work is divided across the two cores:
 
 - Core 1 runs the LVGL task and the 250 ms `ui_timer` in `ui/ui.c`.
-- Core 0 runs WiFi, the Spotify client task, the album-art task, and the
-  one-minute soak diagnostics task.
+- Core 0 runs WiFi, the Spotify client task, the album-art task, the
+  one-minute soak diagnostics task, and the `bop_screenshot` serial task in
+  `screenshot.c`. That task starts even when the mirror buffers failed to
+  allocate, and even on an unprovisioned board, because the host still reaches
+  it. A serial path that never came up is the exception:
+  `bop_screenshot_start` refuses when either mutex is NULL, because every
+  response path takes them.
 
 Data moves one way. The Spotify task polls `currently-playing` every two
 seconds and publishes a `playback_state_t` snapshot behind a mutex. Each real
@@ -85,9 +90,11 @@ change increments `change_counter`. The UI timer copies that snapshot with
 
 Commands move back through queues, never through direct calls. A gesture calls
 `bop_spotify_enqueue_command`, the client task sends the request, and the
-result returns on a second queue that `process_command_results` drains. The UI
-shows the new play state immediately, then the next snapshot corrects it. The
-`optimistic_*` fields in `ui_context_t` hold that short window.
+result returns on a second queue that `process_command_results` drains. The
+serial task also produces on that queue: the `n`, `b`, and `t` keys enqueue the
+same commands. The UI shows the new play state immediately, then
+the next snapshot corrects it. The `optimistic_*` fields in `ui_context_t` hold
+that short window.
 
 The art pipeline (`ui/art.c`) is a third producer. It downloads the JPEG into
 PSRAM, decodes it with `esp_jpeg`, scales it to 368 pixels, and averages the
@@ -143,15 +150,14 @@ easier.
   last moment a credential-free factory image can be taken.
 - `flash` and `flash-perf` run `tools/flash.py`, which takes that backup itself
   and then flashes. `mise run flash -- --force` skips the backup step and warns
-  in one line. The backup step moved out of `mise.toml` because mise runs a
-  `depends` entry whatever arguments follow the task. `--force` relaxes
-  recoverability only: the forced path never enters `backup_flash.py`, so it
-  cannot reach the refusal above, and skipping a backup is never taking one.
-  `tools/flash.py` owns two arguments and forwards every other one to `idf.py`
-  after the `flash` subcommand, where the old task put them. `--build-dir` is
-  how `flash-perf` names `build-perf`, because `-B` has to arrive before the
-  subcommand. Only the first `--force` is Bop's; a second one reaches
-  `idf.py flash --force`, which is a different flag.
+  in one line. `--force` relaxes recoverability only: the forced path never
+  enters `backup_flash.py`, so it cannot reach the refusal above, and the
+  unforced path calls `backup_flash.main()` with no arguments, so nothing a
+  user types reaches that refusal either. Skipping a backup is never taking
+  one. No flag makes a provisioned device produce one.
+  The docstrings in `tools/flash.py` hold the rest: why the backup step left
+  `mise.toml`, and how the tool splits its own two arguments from the ones it
+  forwards to `idf.py`.
 - `restore.py` checks size, digest, and a credential-free NVS region, then
   re-checks the file digest and the device MAC address inside
   `WRITE_VERIFIED_FLASH_COMMAND` after the user approves. Nothing between the
@@ -181,9 +187,12 @@ Some host checks assert on the text of other sources.
 `test_display_recovery.py` reads `app_main.c`. `test_playback_feedback.py`
 reads `ui.c` and `spotify.c`. `test_deprovision.py` reads `app_main.c`,
 `firmware/CMakeLists.txt`, and `firmware/partitions.csv`. `test_provision.py`
-reads `credentials.c`. An edit to those files can turn the checks red even when
-the code is correct. Read the failing assertion, then decide whether the check
-or the code is wrong.
+reads `credentials.c`. `test_screenshot.py` reads `screenshot.c` and
+`app_main.c`, and it slices `screenshot.c` by function name, so it also pins
+the order of those functions. `test_backup.py` and `test_task_cancellation.py`
+read `mise.toml` and assert on the task definitions. An edit to those files can
+turn the checks red even when the code is correct. Read the failing assertion,
+then decide whether the check or the code is wrong.
 
 Every new file needs an SPDX header, or an entry in `REUSE.toml` when a header
 is impossible. `mise run licenses` is the check.

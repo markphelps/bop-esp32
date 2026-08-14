@@ -53,6 +53,44 @@ class FakeSerial:
         return len(data)
 
 
+class ReplyingSerial(FakeSerial):
+    """A serial connection that answers each request with its own fragments.
+
+    The device sends nothing until it is asked, so a fragment list that ignores
+    the requests cannot show a silent device at all: the fragments of the second
+    answer arrive inside the first one.
+    """
+
+    def __init__(self, replies: list[list[bytes]]) -> None:
+        super().__init__([])
+        self.replies = iter(replies)
+        self.pending: list[bytes] = []
+
+    def read(self, size: int = 1) -> bytes:
+        self.events.append("read")
+        return self.pending.pop(0) if self.pending else b""
+
+    def write(self, data: bytes) -> int:
+        self.pending = list(next(self.replies, []))
+        return super().write(data)
+
+
+class SteppingClock:
+    """A monotonic clock that advances one step for each read of it.
+
+    Real time would make a stall check that waits eight seconds cost eight
+    seconds of the host checks.
+    """
+
+    def __init__(self, step: float = 1.0) -> None:
+        self.now = 0.0
+        self.step = step
+
+    def __call__(self) -> float:
+        self.now += self.step
+        return self.now
+
+
 def payload(pixel: bytes = b"\xf8\x00") -> bytes:
     return pixel * (screenshot.WIDTH * screenshot.HEIGHT)
 
@@ -98,10 +136,14 @@ def read_frame(fragments: list[bytes]) -> bytes:
 
 
 def assert_refused(**fields: Any) -> None:
-    try:
-        read_frame([frame(**fields)])
-    except RuntimeError:
-        return
+    # A header this host cannot parse is discarded by the magic search, which
+    # then waits out its stall check on a silent device. The clock keeps that
+    # wait off the wall clock of the host checks.
+    with patch.object(screenshot.time, "monotonic", SteppingClock()):
+        try:
+            read_frame([frame(**fields)])
+        except RuntimeError:
+            return
     raise AssertionError(f"accepted invalid frame fields: {fields}")
 
 
@@ -136,8 +178,15 @@ def test_firmware_uses_bounded_serial_writes() -> None:
     assert "write_size" in writer
     # Each chunk waits for what is left of the response budget, never forever.
     assert "usb_serial_jtag_write_bytes(source + offset, write_size, wait)" in writer
-    assert "wait = remaining_budget(start)" in writer
+    # Half of what is left, not all of it. usb_serial_jtag_write_bytes applies
+    # ticks_to_wait twice, once to its transmit mutex and once to the ring
+    # buffer send, so the whole budget here makes the worst-case hold of the
+    # serial output mutex two budgets long instead of one.
+    assert "wait = remaining_budget(start) / 2" in writer
     assert "portMAX_DELAY" not in writer
+    # Nothing inside the mutex hold may log: a log line from this task lands in
+    # the middle of the frame it is sending.
+    assert "ESP_LOG" not in writer
 
 
 def test_one_serial_budget_covers_a_whole_screenshot_frame() -> None:
@@ -149,9 +198,9 @@ def test_one_serial_budget_covers_a_whole_screenshot_frame() -> None:
     """
     response = firmware_function("static bool send_response", "static void send_screenshot")
     assert response.count("xTaskGetTickCount()") == 1
-    assert response.index("xSemaphoreTake(serial_output_mutex, portMAX_DELAY)") < response.index(
-        "xTaskGetTickCount()"
-    )
+    assert response.index(
+        "xSemaphoreTakeRecursive(serial_output_mutex, portMAX_DELAY)"
+    ) < response.index("xTaskGetTickCount()")
     assert response.count("write_serial_bytes(") == 2
     assert response.count(", start)") == 2
     assert "usb_serial_jtag_wait_tx_done(remaining_budget(start))" in response
@@ -167,7 +216,7 @@ def test_one_serial_budget_covers_a_whole_screenshot_frame() -> None:
 
 def test_an_abandoned_frame_releases_the_mutex_and_is_reported_once() -> None:
     response = firmware_function("static bool send_response", "static void send_screenshot")
-    give = "xSemaphoreGive(serial_output_mutex);"
+    give = "xSemaphoreGiveRecursive(serial_output_mutex);"
     assert response.count(give) == 1
     assert response.index("usb_serial_jtag_wait_tx_done") < response.index(give)
     assert response.index(give) < response.index("return sent;")
@@ -196,6 +245,37 @@ def test_the_log_hook_is_never_installed_over_a_null_forward_pointer() -> None:
     )
     assert "vprintf_like_t previous = esp_log_set_vprintf(serial_log_vprintf);" in initialization
     assert "if (previous != NULL) {" in initialization
+
+
+def test_the_serial_output_mutex_survives_a_log_line_from_its_own_holder() -> None:
+    """The hold spans IDF calls that log when they refuse an argument.
+
+    usb_serial_jtag_write_bytes opens with two ESP_RETURN_ON_FALSE checks, and
+    each one calls ESP_LOGE. A non-recursive mutex would make the sending task
+    wait on itself forever, with every task that writes a log line blocked
+    behind it for the life of the firmware.
+    """
+    source = firmware_source()
+    assert "serial_output_mutex = xSemaphoreCreateRecursiveMutex();" in source
+    hook = firmware_function("static int serial_log_vprintf", "static void write_uint16_le")
+    assert "xSemaphoreTakeRecursive(serial_output_mutex, portMAX_DELAY);" in hook
+    assert "xSemaphoreGiveRecursive(serial_output_mutex);" in hook
+
+
+def test_a_second_initialization_never_deletes_the_mutex_the_log_hook_uses() -> None:
+    """The log hook stays installed for the life of the firmware.
+
+    It takes serial_output_mutex with no NULL check, so the driver-install
+    failure of a second call must not reach delete_mutexes. The guard sits
+    ahead of the creations, so no second call reassigns a handle either.
+    """
+    initialization = firmware_function(
+        "esp_err_t bop_screenshot_init", "esp_err_t bop_screenshot_start"
+    )
+    guard = initialization[: initialization.index("xSemaphoreCreateRecursiveMutex")]
+    assert "if (serial_output_mutex != NULL) {" in guard
+    assert "return ESP_ERR_INVALID_STATE;" in guard
+    assert "delete_mutexes();" not in guard
 
 
 def test_missing_mirror_buffers_fail_initialization_but_keep_the_serial_task() -> None:
@@ -364,14 +444,113 @@ def test_preheader_limit() -> None:
     try:
         read_frame([b"x" * (screenshot.PRE_HEADER_LIMIT + 1) + frame()])
     except RuntimeError as error:
-        assert "65536" in str(error)
+        assert str(screenshot.PRE_HEADER_LIMIT) in str(error)
     else:
-        raise AssertionError("accepted 65537 pre-header bytes")
+        raise AssertionError("accepted one byte more than the pre-header limit")
+
+
+def test_a_resumed_payload_before_the_header_does_not_fail_the_run() -> None:
+    """A run that dies mid-payload leaves the rest of that payload behind.
+
+    The device is inside its 5000 ms send budget then, so it abandons nothing.
+    It sends the rest of the old payload to the next run, and only then the
+    frame that run asked for. A limit under one whole frame made the run after
+    a Ctrl+C a hard failure, with the whole 30-second deadline unused.
+    """
+    leftover = b"\x00" * (screenshot.HEADER_LENGTH + screenshot.PIXEL_BYTES - 1)
+    assert screenshot.MAGIC not in leftover
+    assert len(leftover) > 65536
+    assert read_frame([leftover + frame()]) == payload()
+
+
+def test_a_truncated_frame_is_retryable_rather_than_a_timeout() -> None:
+    """The device stops mid-payload and sends nothing more.
+
+    The host sat in the payload loop until the 30-second deadline expired, and
+    then blamed a timeout for a frame the device had abandoned after 5000 ms.
+    Silence longer than that budget is the only signal the device gives.
+    """
+    truncated = frame()[: screenshot.HEADER_LENGTH + 4096]
+    with patch.object(screenshot.time, "monotonic", SteppingClock()):
+        try:
+            screenshot.read_frame(FakeSerial([truncated]))
+        except screenshot.ScreenshotTruncatedFrameError as error:
+            assert str(screenshot.STALL_SECONDS) in str(error)
+        else:
+            raise AssertionError("waited out the deadline for an abandoned frame")
+    assert screenshot.ScreenshotTruncatedFrameError in screenshot.RETRYABLE_ERRORS
+    # Longer than the device budget, or a healthy pause inside a frame becomes
+    # a request the device never asked for.
+    assert screenshot.STALL_SECONDS > 5
+
+
+def test_a_header_the_host_cannot_parse_stalls_instead_of_spending_the_deadline() -> None:
+    """The magic search needs the stall check that the payload read already had.
+
+    A header carrying an unsupported version or header length is discarded by
+    the search, and the pre-header limit is one whole frame wide now, so the
+    discarded frame no longer overflows it. The search then waits on a device
+    that has finished answering. Without a stall check here, every such header
+    costs the whole 30-second deadline and reports a timeout, which names the
+    cable rather than the answer the device actually gave.
+    """
+    for fields in ({"version": 2}, {"header_length": 23}):
+        clock = SteppingClock()
+        with patch.object(screenshot.time, "monotonic", clock):
+            try:
+                screenshot.read_frame(FakeSerial([frame(**fields)]))
+            except screenshot.ScreenshotTruncatedFrameError as error:
+                assert str(screenshot.STALL_SECONDS) in str(error)
+            except screenshot.ScreenshotTimeoutError:
+                raise AssertionError(f"spent the whole deadline on {fields}") from None
+            else:
+                raise AssertionError(f"accepted an unparsable header: {fields}")
+        # The stall ends the search on its own, well inside the deadline.
+        assert clock.now < screenshot.FRAME_TIMEOUT_SECONDS
+    # A discarded frame no longer reaches the pre-header limit, so that limit is
+    # not the thing that stops this search any more.
+    assert screenshot.HEADER_LENGTH + screenshot.PIXEL_BYTES < screenshot.PRE_HEADER_LIMIT
+
+
+def test_a_truncated_frame_is_retried_inside_the_deadline() -> None:
+    serial = ReplyingSerial([[frame()[: screenshot.HEADER_LENGTH + 4096]], [frame()]])
+    with tempfile.TemporaryDirectory() as directory:
+        output = Path(directory) / "screen.png"
+        with (
+            patch.object(screenshot.time, "monotonic", SteppingClock()),
+            patch.object(screenshot.detect_port, "detect_port", return_value="/dev/usb"),
+            patch.object(screenshot.time, "sleep"),
+        ):
+            screenshot.screenshot(output, lambda: serial)
+        assert output.is_file()
+    assert serial.events.count("write:s") == 2
+
+
+def test_the_timeout_names_the_last_answer_the_device_gave() -> None:
+    """A deadline spent on not-ready answers must not read like a dead cable."""
+    serial = ReplyingSerial([[error_frame(1)] for _ in range(20)])
+    with tempfile.TemporaryDirectory() as directory:
+        output = Path(directory) / "screen.png"
+        with (
+            patch.object(screenshot.time, "monotonic", SteppingClock(step=5.0)),
+            patch.object(screenshot.detect_port, "detect_port", return_value="/dev/usb"),
+            patch.object(screenshot.time, "sleep"),
+        ):
+            try:
+                screenshot.screenshot(output, lambda: serial)
+            except RuntimeError as error:
+                assert "Timed out" in str(error)
+                assert "mirror is not ready" in str(error)
+            else:
+                raise AssertionError("a run that never got a frame reported success")
+        assert not output.exists()
 
 
 def test_timeout_and_eof_are_refused() -> None:
     connection = FakeSerial([])
-    with patch.object(screenshot.time, "monotonic", side_effect=[0, 31]):
+    # Three reads: the deadline, the stall baseline, and the check inside
+    # read_more that finds the deadline expired.
+    with patch.object(screenshot.time, "monotonic", side_effect=[0, 0, 31]):
         try:
             screenshot.read_frame(connection)
         except RuntimeError as error:
@@ -568,6 +747,8 @@ def main() -> int:
     test_one_serial_budget_covers_a_whole_screenshot_frame()
     test_an_abandoned_frame_releases_the_mutex_and_is_reported_once()
     test_the_log_hook_is_never_installed_over_a_null_forward_pointer()
+    test_the_serial_output_mutex_survives_a_log_line_from_its_own_holder()
+    test_a_second_initialization_never_deletes_the_mutex_the_log_hook_uses()
     test_missing_mirror_buffers_fail_initialization_but_keep_the_serial_task()
     test_no_initialization_failure_leaks_a_mutex()
     test_screenshot_refresh_runs_in_the_lvgl_task()
@@ -575,6 +756,11 @@ def main() -> int:
     test_fragmented_frame_and_split_magic()
     test_log_magic_before_a_frame_is_skipped()
     test_preheader_limit()
+    test_a_resumed_payload_before_the_header_does_not_fail_the_run()
+    test_a_truncated_frame_is_retryable_rather_than_a_timeout()
+    test_a_header_the_host_cannot_parse_stalls_instead_of_spending_the_deadline()
+    test_a_truncated_frame_is_retried_inside_the_deadline()
+    test_the_timeout_names_the_last_answer_the_device_gave()
     test_timeout_and_eof_are_refused()
     test_every_invalid_header_field_is_refused()
     test_not_ready_response_is_distinct_from_other_device_errors()

@@ -72,11 +72,17 @@ static void delete_mutexes(void)
     }
 }
 
+// The mutex is recursive because the task that holds it can reach this hook
+// again. usb_serial_jtag_write_bytes starts with two ESP_RETURN_ON_FALSE
+// checks that log, so a non-recursive mutex would let the sender wait on
+// itself forever, with every other task blocked behind it. A recursive take
+// costs one log line inside a frame instead. The host reads that frame as a
+// CRC error and asks again.
 static int serial_log_vprintf(const char *format, va_list arguments)
 {
-    xSemaphoreTake(serial_output_mutex, portMAX_DELAY);
+    xSemaphoreTakeRecursive(serial_output_mutex, portMAX_DELAY);
     int result = original_vprintf(format, arguments);
-    xSemaphoreGive(serial_output_mutex);
+    xSemaphoreGiveRecursive(serial_output_mutex);
     return result;
 }
 
@@ -128,7 +134,11 @@ static bool write_serial_bytes(const uint8_t *source, size_t size, TickType_t st
         size_t write_size = remaining < BOP_SCREENSHOT_SERIAL_WRITE_SIZE
             ? remaining
             : BOP_SCREENSHOT_SERIAL_WRITE_SIZE;
-        TickType_t wait = remaining_budget(start);
+        // Half of what is left, because usb_serial_jtag_write_bytes applies
+        // this wait twice: once to its own transmit mutex and once to the
+        // ring buffer send. The whole budget here makes the worst-case hold
+        // two budgets long.
+        TickType_t wait = remaining_budget(start) / 2;
         if (wait == 0) {
             return false;
         }
@@ -146,11 +156,15 @@ static bool send_response(uint8_t status, uint32_t crc)
     uint8_t header[BOP_SCREENSHOT_HEADER_SIZE];
     make_header(header, status, crc);
 
-    xSemaphoreTake(serial_output_mutex, portMAX_DELAY);
+    xSemaphoreTakeRecursive(serial_output_mutex, portMAX_DELAY);
     // The clock starts after the mutex arrives, because the budget bounds how
     // long this task holds the mutex. Every task that writes a log line waits
     // behind it, so a host that stops reading in the middle of a frame must
     // cost them this budget once and then get the mutex back.
+    //
+    // Nothing between this take and the give below may log. A log line from
+    // this task lands in the middle of the frame it is sending, and the host
+    // then reads a payload with a broken CRC.
     const TickType_t start = xTaskGetTickCount();
     bool sent = write_serial_bytes(header, sizeof(header), start);
     if (sent && status == BOP_SCREENSHOT_STATUS_SUCCESS) {
@@ -159,10 +173,12 @@ static bool send_response(uint8_t status, uint32_t crc)
     if (sent) {
         sent = usb_serial_jtag_wait_tx_done(remaining_budget(start)) == ESP_OK;
     }
-    xSemaphoreGive(serial_output_mutex);
-    // An abandoned frame leaves at most one transmit buffer of bytes behind.
-    // The host resets its input buffer before the next request and skips up to
-    // 65536 bytes before a header, so those bytes cannot damage a later frame.
+    xSemaphoreGiveRecursive(serial_output_mutex);
+    // An abandoned frame leaves at most one transmit buffer of bytes behind,
+    // which the host skips before the next header. A frame this task did not
+    // abandon is the larger leftover: a host that dies mid-payload and starts
+    // again inside the budget gets the rest of the old payload first. The host
+    // skips a whole frame plus its noise allowance for that reason.
     return sent;
 }
 
@@ -182,9 +198,11 @@ static void send_screenshot(void)
         xSemaphoreGiveRecursive(mirror_mutex);
     }
     if (!send_response(status, crc)) {
+        // The budget, not a measurement: a write that fails at once takes this
+        // same path, so no duration is known here.
         ESP_LOGW(
             TAG,
-            "Screenshot abandoned after %ums because the host stopped reading",
+            "Screenshot abandoned: the host did not read the frame within %ums",
             (unsigned)BOP_SCREENSHOT_SERIAL_BUDGET_MS);
     }
 }
@@ -269,8 +287,16 @@ static void screenshot_task(void *argument)
 
 esp_err_t bop_screenshot_init(void)
 {
+    // A second call must stop here. The log hook below stays installed for the
+    // life of the firmware and takes serial_output_mutex without a NULL check,
+    // so the driver-install failure of a second call would delete that handle
+    // under a live hook.
+    if (serial_output_mutex != NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
     mirror_mutex = xSemaphoreCreateRecursiveMutex();
-    serial_output_mutex = xSemaphoreCreateMutex();
+    serial_output_mutex = xSemaphoreCreateRecursiveMutex();
     if (mirror_mutex == NULL || serial_output_mutex == NULL) {
         delete_mutexes();
         return ESP_ERR_NO_MEM;

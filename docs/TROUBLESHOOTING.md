@@ -103,6 +103,15 @@ The log can show an album-art download, JPEG, decode, or memory error.
 Disconnect and reconnect USB power. If the problem continues, enter download
 mode and run `mise run flash`.
 
+The flash task takes a factory backup first, and the backup command refuses a
+provisioned board. If the board holds credentials and `backups/factory.bin`
+does not exist, that task stops. Run `mise run flash -- --force` to flash
+without a backup.
+
+CAUTION: `mise run flash -- --force` takes no factory backup. If no valid
+backup exists, you cannot restore the board to its shipped state after this
+flash.
+
 If flashing does not correct the fault, use the factory-restore procedure only
 when you have a valid backup. A restore overwrites all 16 MB of flash. Read
 [INSTALL.md](../INSTALL.md) before you restore.

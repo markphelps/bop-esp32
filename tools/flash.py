@@ -52,6 +52,7 @@ def split_arguments(arguments: list[str]) -> tuple[bool, list[str]]:
     `--` to the end of that, so a user's arguments arrived after the subcommand.
     They still do. `--build-dir` is how `mise.toml` names the performance build
     directory, because that one has to arrive before the subcommand instead.
+    The module docstring above records why the backup step lives here at all.
 
     Only the FIRST `--force` is Bop's. A second one reaches `idf.py flash
     --force`, which is a different flag with a different meaning, and which

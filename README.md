@@ -49,7 +49,7 @@ CI runs on Linux only. Use macOS for the supported hardware procedure.
 7. Run `mise run provision`.
 8. Run `mise run flash`.
 
-`mise run provision` and `mise run flash` each require a credential-free backup. A backup made before the first flash is the factory image.
+`mise run provision` and `mise run flash` each take a credential-free backup first. A backup made before the first flash is the factory image. `mise run flash -- --force` flashes with no backup. It warns and takes none, and it never makes a backup of a provisioned board possible.
 
 If a valid backup exists, the backup task validates it and does not read the board. If an incomplete or invalid backup exists, the task stops. Move that backup out of `backups/` before you try again.
 

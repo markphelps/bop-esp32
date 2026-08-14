@@ -25,8 +25,19 @@ WIDTH = 368
 HEIGHT = 448
 PIXEL_FORMAT_RGB565_BE = 1
 PIXEL_BYTES = WIDTH * HEIGHT * 2
-PRE_HEADER_LIMIT = 65536
+NOISE_ALLOWANCE = 65536
+# One whole frame, then the old noise allowance. A run that dies in the middle
+# of a payload leaves the device inside its send budget, so the device streams
+# the rest of that payload to the next run before the frame that run asked for.
+# A limit under one frame turned that leftover into a hard failure. Retrying on
+# the overflow instead would also converge, because the leftover is bounded and
+# the device budget expires, but it spends whole requests to reach the frame
+# that this limit accepts on the first one.
+PRE_HEADER_LIMIT = HEADER_LENGTH + PIXEL_BYTES + NOISE_ALLOWANCE
 FRAME_TIMEOUT_SECONDS = 30
+# Longer than the device send budget of 5000 ms, so a device that abandoned a
+# frame is quiet for this long only after it stopped sending.
+STALL_SECONDS = 8
 REEXEC_GUARD = "BOP_SCREENSHOT_PYSERIAL_REEXEC"
 
 
@@ -43,6 +54,33 @@ class ScreenshotCorruptFrameError(RuntimeError):
     second request usually returns a clean frame, which a device error frame
     never does.
     """
+
+
+class ScreenshotTimeoutError(RuntimeError):
+    """The whole-frame deadline expired.
+
+    It carries its own class so that the retry loop can name the last answer
+    the device gave, whichever read reached the deadline first.
+    """
+
+
+class ScreenshotTruncatedFrameError(RuntimeError):
+    """The device stopped in the middle of a frame it had started.
+
+    The device gives one whole response a 5000 ms budget, and abandons the
+    response when that budget expires. It sends nothing more, so a host that
+    waits for the rest waits out its own deadline for a frame that can never
+    arrive. A new request usually returns a whole frame.
+    """
+
+
+# The three answers that a second request can correct. Every other error stops
+# the run at once.
+RETRYABLE_ERRORS = (
+    ScreenshotNotReadyError,
+    ScreenshotCorruptFrameError,
+    ScreenshotTruncatedFrameError,
+)
 
 
 class SerialConnection(Protocol):
@@ -114,6 +152,19 @@ def open_serial(factory: Callable[[], SerialConnection]) -> SerialConnection:
     return connection
 
 
+def timed_out(last_answer: RuntimeError | None) -> ScreenshotTimeoutError:
+    """The deadline error, named after the last answer the device gave.
+
+    A run that spends its whole deadline on not-ready answers reported a bare
+    timeout, which names the cable and not the mirror. The last retryable
+    answer is the actionable half of that message.
+    """
+    message = "Timed out while waiting for a complete screenshot frame"
+    if last_answer is None:
+        return ScreenshotTimeoutError(message)
+    return ScreenshotTimeoutError(f"{message}. The last device answer was: {last_answer}")
+
+
 def read_more(connection: SerialConnection, deadline: float) -> bytes:
     """Read one serial chunk, or stop when the complete-frame deadline expires.
 
@@ -122,8 +173,29 @@ def read_more(connection: SerialConnection, deadline: float) -> bytes:
     that only an empty read can reach never occurs.
     """
     if time.monotonic() >= deadline:
-        raise RuntimeError("Timed out while waiting for a complete screenshot frame")
+        raise timed_out(None)
     return connection.read(4096)
+
+
+def read_until(connection: SerialConnection, buffer: bytearray, size: int, deadline: float) -> None:
+    """Fill the buffer to `size` bytes, or refuse a frame the device stopped sending.
+
+    The device abandons a response that it cannot send inside its own 5000 ms
+    budget, and it sends no marker for that. Silence is the only signal, so a
+    stall longer than that budget becomes a retryable error here. Without it the
+    host waits out the whole 30-second deadline and then reports a timeout for a
+    frame that can never arrive.
+    """
+    last_progress = time.monotonic()
+    while len(buffer) < size:
+        data = read_more(connection, deadline)
+        if data:
+            buffer.extend(data)
+            last_progress = time.monotonic()
+        elif time.monotonic() - last_progress >= STALL_SECONDS:
+            raise ScreenshotTruncatedFrameError(
+                f"The device stopped sending the screenshot frame for {STALL_SECONDS} seconds"
+            )
 
 
 def validate_header(header: bytes) -> int:
@@ -162,10 +234,19 @@ def validate_header(header: bytes) -> int:
 
 
 def read_frame(connection: SerialConnection, deadline: float | None = None) -> bytes:
-    """Read and validate one framed screenshot response from a noisy serial stream."""
+    """Read and validate one framed screenshot response from a noisy serial stream.
+
+    The search for the header needs the same stall check as the payload read.
+    The pre-header limit is one whole frame wide now, so a device that answers
+    with a header this host cannot parse no longer trips that limit: the search
+    discards the frame, finds no other magic, and waits on a device that has
+    already said everything it means to say. Silence ends the search here, and
+    the retry that follows names the device rather than the cable.
+    """
     deadline = time.monotonic() + FRAME_TIMEOUT_SECONDS if deadline is None else deadline
     buffer = bytearray()
     skipped = 0
+    last_progress = time.monotonic()
 
     while True:
         magic_position = buffer.find(MAGIC)
@@ -173,13 +254,11 @@ def read_frame(connection: SerialConnection, deadline: float | None = None) -> b
             skipped += magic_position
             if skipped > PRE_HEADER_LIMIT:
                 raise RuntimeError(
-                    "The screenshot response has more than 65536 bytes before its header"
+                    f"The screenshot response has more than {PRE_HEADER_LIMIT} bytes "
+                    "before its header"
                 )
             del buffer[:magic_position]
-            while len(buffer) < 8:
-                data = read_more(connection, deadline)
-                if data:
-                    buffer.extend(data)
+            read_until(connection, buffer, 8, deadline)
             version, header_length = buffer[4], struct.unpack_from("<H", buffer, 6)[0]
             if version == VERSION and header_length == HEADER_LENGTH:
                 break
@@ -191,25 +270,24 @@ def read_frame(connection: SerialConnection, deadline: float | None = None) -> b
         skipped += len(buffer) - keep
         if skipped > PRE_HEADER_LIMIT:
             raise RuntimeError(
-                "The screenshot response has more than 65536 bytes before its header"
+                f"The screenshot response has more than {PRE_HEADER_LIMIT} bytes before its header"
             )
         if len(buffer) > keep:
             del buffer[:-keep]
         data = read_more(connection, deadline)
         if data:
             buffer.extend(data)
+            last_progress = time.monotonic()
+        elif time.monotonic() - last_progress >= STALL_SECONDS:
+            raise ScreenshotTruncatedFrameError(
+                f"The device sent no screenshot header for {STALL_SECONDS} seconds"
+            )
 
-    while len(buffer) < HEADER_LENGTH:
-        data = read_more(connection, deadline)
-        if data:
-            buffer.extend(data)
+    read_until(connection, buffer, HEADER_LENGTH, deadline)
 
     expected_crc = validate_header(bytes(buffer[:HEADER_LENGTH]))
     del buffer[:HEADER_LENGTH]
-    while len(buffer) < PIXEL_BYTES:
-        data = read_more(connection, deadline)
-        if data:
-            buffer.extend(data)
+    read_until(connection, buffer, PIXEL_BYTES, deadline)
 
     payload = bytes(buffer[:PIXEL_BYTES])
     actual_crc = zlib.crc32(payload) & 0xFFFFFFFF
@@ -268,19 +346,20 @@ def write_png(path: Path, payload: bytes) -> None:
 def screenshot(path: Path, factory: Callable[[], SerialConnection]) -> None:
     """Request a screenshot and write it after the complete frame validates.
 
-    A not-ready device and a damaged frame both get a new request inside the
-    same deadline. The stale input is discarded before each request, because
-    the bytes that damaged one frame must not reach the next one. A device
-    error frame stops the request at once.
+    A not-ready device, a damaged frame, and an abandoned frame all get a new
+    request inside the same deadline. The stale input is discarded before each
+    request, because the bytes that damaged one frame must not reach the next
+    one. A device error frame stops the request at once.
     """
     if path.exists():
         raise RuntimeError(f"The output file already exists: {path}")
     connection = open_serial(factory)
     deadline = time.monotonic() + FRAME_TIMEOUT_SECONDS
+    last_answer: RuntimeError | None = None
     try:
         while True:
             if time.monotonic() >= deadline:
-                raise RuntimeError("Timed out while waiting for a complete screenshot frame")
+                raise timed_out(last_answer)
             connection.reset_input_buffer()
             if connection.write(b"s") != 1:
                 raise RuntimeError("Could not send the screenshot request")
@@ -288,8 +367,11 @@ def screenshot(path: Path, factory: Callable[[], SerialConnection]) -> None:
             try:
                 write_png(path, read_frame(connection, deadline))
                 return
-            except (ScreenshotNotReadyError, ScreenshotCorruptFrameError):
+            except RETRYABLE_ERRORS as error:
+                last_answer = error
                 time.sleep(0.1)
+            except ScreenshotTimeoutError:
+                raise timed_out(last_answer) from None
     finally:
         connection.close()
 

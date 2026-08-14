@@ -38,7 +38,11 @@ Do not create or enter a client secret. Bop uses OAuth PKCE and needs only the C
 10. Complete Spotify authorization in the browser.
 11. Run `mise run flash`.
 
-`mise run provision` requires a credential-free backup. A backup made before the first flash is the factory image. `mise run flash` also requires a valid backup.
+`mise run provision` requires a credential-free backup. A backup made before the first flash is the factory image. `mise run flash` takes that same backup before it flashes.
+
+`mise run flash -- --force` flashes and takes no backup. Use it when the board holds credentials and no valid backup exists. It warns in one line. No flag makes a backup of a provisioned board possible.
+
+CAUTION: After a forced flash with no valid backup, you cannot restore the shipped board state.
 
 If a valid backup exists, the backup task validates it and does not read the board. If an incomplete or invalid backup exists, the task stops. Move that backup out of `backups/` before you try again.
 
