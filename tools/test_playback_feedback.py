@@ -109,6 +109,67 @@ def test_rate_limit_policy_rejects_regressions() -> None:
     )
 
 
+def assert_ui_rejected(old: str, new: str) -> None:
+    mutated = UI_SOURCE.replace(old, new, 1)
+    assert mutated != UI_SOURCE
+    try:
+        assert_tap_feedback_policy(mutated)
+    except (AssertionError, ValueError):
+        return
+    raise AssertionError(f"The tap-feedback validator accepted mutation: {old!r}")
+
+
+def assert_tap_feedback_policy(source: str) -> None:
+    gesture_start = source.index("static bool send_gesture_command(")
+    gesture_end = source.index("static void handle_tap(", gesture_start)
+    gesture = source[gesture_start:gesture_end]
+    results = function_body(source, "process_command_results", "ui_timer")
+    timer_start = source.index("static void ui_timer(")
+    timer_end = source.index("esp_err_t bop_ui_start(", timer_start)
+    timer = source[timer_start:timer_end]
+    swipe_start = source.index("static void animate_swipe(")
+    swipe_end = source.index("static bool send_gesture_command(", swipe_start)
+    swipe = source[swipe_start:swipe_end]
+
+    assert "submission == SPOTIFY_COMMAND_SUBMISSION_QUEUED" in gesture
+    assert "submission == SPOTIFY_COMMAND_SUBMISSION_RATE_LIMITED && request_id != 0" in gesture
+    assert gesture.count("show_feedback(LV_SYMBOL_WARNING);") == 1
+    assert "else if (result.rate_limited)" in results
+    assert results.count("show_feedback(LV_SYMBOL_WARNING);") == 1
+    assert "show_feedback(" not in swipe
+    assert "process_command_results();" in timer
+
+
+def test_tap_feedback_rejects_regressions() -> None:
+    assert_tap_feedback_policy(UI_SOURCE)
+
+    assert_ui_rejected(
+        "if (submission == SPOTIFY_COMMAND_SUBMISSION_RATE_LIMITED && request_id != 0)",
+        "if (false)",
+    )
+    assert_ui_rejected("else if (result.rate_limited)", "else if (false)")
+    assert_ui_rejected("return true;", "show_feedback(LV_SYMBOL_WARNING);\n        return true;")
+    assert_ui_rejected(
+        "    return false;\n}",
+        "    if (submission == SPOTIFY_COMMAND_SUBMISSION_QUEUE_FULL) {\n"
+        "        show_feedback(LV_SYMBOL_WARNING);\n"
+        "    }\n"
+        "    return false;\n}",
+    )
+    assert_ui_rejected(
+        "    return false;\n}",
+        "    if (submission == SPOTIFY_COMMAND_SUBMISSION_NOT_READY) {\n"
+        "        show_feedback(LV_SYMBOL_WARNING);\n"
+        "    }\n"
+        "    return false;\n}",
+    )
+    assert_ui_rejected(
+        "static void animate_swipe(int direction)\n{",
+        "static void animate_swipe(int direction)\n{\n    show_feedback(LV_SYMBOL_WARNING);",
+    )
+    assert_ui_rejected("process_command_results();", "/* command results disabled */")
+
+
 def test_feedback_uses_the_album_art_center_and_duration() -> None:
     feedback = function_body(UI_SOURCE, "create_feedback_layer", "show_playing")
 
@@ -149,6 +210,7 @@ def test_spotify_branding_is_limited_to_attribution() -> None:
 
 def main() -> int:
     test_rate_limit_policy_rejects_regressions()
+    test_tap_feedback_rejects_regressions()
     test_feedback_uses_the_album_art_center_and_duration()
     test_feedback_requires_an_accepted_tap_request()
     test_spotify_branding_is_limited_to_attribution()
