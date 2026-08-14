@@ -11,7 +11,8 @@ Read the [source-only notice](README.md#project-status) before you contribute.
 3. Make one focused change on that branch.
 4. Run the local checks that apply to the change.
 5. Open a pull request to `main`.
-6. Merge only after the required GitHub checks pass.
+6. For a code change, merge only after the required GitHub checks pass.
+7. For a Markdown-only change, record the local checks and merge after review. The GitHub workflow does not start.
 
 Do not commit credentials, WiFi passwords, refresh tokens, flash images, or
 contents of `backups/`. Do not add a firmware binary, package, release tag, or
@@ -52,13 +53,17 @@ stops.
 
 ## Required GitHub checks
 
-Each pull request runs these required checks on Linux:
+A pull request that changes a non-Markdown path runs these required checks on
+Linux:
 
 - `firmware`
 - `host-tools (linux)`
 - `python-style`
 - `secrets`
 - `licenses`
+
+A change that contains only `**/*.md` files does not start the workflow. Run
+the applicable local documentation checks before you open that pull request.
 
 The workflow is [`.github/workflows/ci.yml`](.github/workflows/ci.yml). The
 firmware check builds in the official ESP-IDF container. The other checks run

@@ -3,6 +3,7 @@
 
 #include "ui.h"
 
+#include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,10 +38,19 @@ LV_FONT_DECLARE(lv_font_montserrat_bold_24);
 #define ART_CORNER_RADIUS 4
 #define FEEDBACK_SIZE 96
 #define FEEDBACK_DURATION_MS 750
+#define VOLUME_UPDATE_INTERVAL_US 150000
+#define VOLUME_FINAL_DELAY_US 400000
+#define VOLUME_CURVE_EXPONENT 1.8f
 #define ATTRIBUTION_QR_SIZE 208
 #define ATTRIBUTION_URL_CAPACITY (sizeof("https://open.spotify.com/track/") + BOP_TRACK_ID_CAPACITY)
 
 static const char *TAG = "bop_ui";
+
+typedef enum {
+    GESTURE_AXIS_NONE,
+    GESTURE_AXIS_HORIZONTAL,
+    GESTURE_AXIS_VERTICAL,
+} gesture_axis_t;
 
 typedef struct {
     lv_obj_t *screen;
@@ -71,7 +81,22 @@ typedef struct {
     bool attribution_visible;
     bool battery_dimmed;
     bool press_active;
+    bool press_moved;
+    bool volume_drag_available;
+    bool volume_last_sent_valid;
+    bool volume_enqueue_attempted;
+    bool volume_final_pending;
+    bool volume_target_awaiting_snapshot;
+    gesture_axis_t gesture_axis;
     lv_point_t press_point;
+    lv_point_t volume_last_point;
+    uint8_t volume_start_percent;
+    uint8_t volume_target_percent;
+    uint8_t volume_last_sent_percent;
+    uint32_t volume_snapshot_generation;
+    int64_t volume_last_attempt_us;
+    int64_t volume_final_deadline_us;
+    int64_t volume_feedback_until_us;
     int64_t last_touch_us;
 } ui_context_t;
 
@@ -259,12 +284,17 @@ static void hide_feedback(lv_anim_t *animation)
     lv_obj_add_flag(animation->var, LV_OBJ_FLAG_HIDDEN);
 }
 
-static void show_feedback(const char *glyph)
+static void set_feedback_text(const char *text)
 {
     lv_anim_delete(ui.feedback, feedback_opacity);
-    lv_label_set_text(ui.feedback_glyph, glyph);
+    lv_label_set_text(ui.feedback_glyph, text);
     lv_obj_remove_flag(ui.feedback, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_style_opa(ui.feedback, LV_OPA_COVER, 0);
+}
+
+static void show_feedback(const char *glyph)
+{
+    set_feedback_text(glyph);
 
     lv_anim_t animation;
     lv_anim_init(&animation);
@@ -389,13 +419,22 @@ static void animate_swipe(int direction)
     lv_anim_start(&animation);
 }
 
+static bool volume_feedback_active(void)
+{
+    return ui.gesture_axis == GESTURE_AXIS_VERTICAL
+        || ui.volume_final_pending
+        || esp_timer_get_time() < ui.volume_feedback_until_us;
+}
+
 static bool send_gesture_command(spotify_command_t command, uint32_t request_id)
 {
     spotify_command_submission_t submission = bop_spotify_enqueue_command(command, request_id);
     if (submission == SPOTIFY_COMMAND_SUBMISSION_QUEUED) {
         return true;
     }
-    if (submission == SPOTIFY_COMMAND_SUBMISSION_RATE_LIMITED && request_id != 0) {
+    if (submission == SPOTIFY_COMMAND_SUBMISSION_RATE_LIMITED
+        && request_id != 0
+        && !volume_feedback_active()) {
         show_feedback(LV_SYMBOL_WARNING);
     }
     return false;
@@ -449,6 +488,160 @@ static void record_touch(void)
     restore_normal_brightness();
 }
 
+static void format_volume_feedback(uint8_t volume_percent, char text[sizeof("100%")])
+{
+    snprintf(text, sizeof("100%"), "%u%%", (unsigned int)volume_percent);
+}
+
+static void hold_volume_feedback(uint8_t volume_percent)
+{
+    char text[sizeof("100%")];
+    format_volume_feedback(volume_percent, text);
+    set_feedback_text(text);
+}
+
+static bool volume_target_is_sent(void)
+{
+    return ui.volume_last_sent_valid
+        && ui.volume_target_percent == ui.volume_last_sent_percent;
+}
+
+static bool volume_enqueue_due(int64_t now)
+{
+    return !ui.volume_enqueue_attempted
+        || now - ui.volume_last_attempt_us >= VOLUME_UPDATE_INTERVAL_US;
+}
+
+static bool enqueue_volume_target(int64_t now)
+{
+    if (volume_target_is_sent()) {
+        return true;
+    }
+    ui.volume_enqueue_attempted = true;
+    ui.volume_last_attempt_us = now;
+    if (!bop_spotify_enqueue_volume(ui.volume_target_percent)) {
+        ESP_LOGW(TAG, "Spotify volume target was not queued");
+        return false;
+    }
+    ui.volume_last_sent_percent = ui.volume_target_percent;
+    ui.volume_last_sent_valid = true;
+    ui.volume_snapshot_generation = bop_spotify_get_volume_request_generation();
+    ui.volume_target_awaiting_snapshot = true;
+    return true;
+}
+
+static uint8_t calculate_volume_target(int32_t vertical)
+{
+    float normalized = (float)abs(vertical) / (float)ART_SIZE;
+    if (normalized > 1.0f) {
+        normalized = 1.0f;
+    }
+    int32_t change = (int32_t)(powf(normalized, VOLUME_CURVE_EXPONENT) * 100.0f + 0.5f);
+    int32_t target = vertical < 0
+        ? (int32_t)ui.volume_start_percent + change
+        : (int32_t)ui.volume_start_percent - change;
+    if (target < 0) {
+        target = 0;
+    } else if (target > 100) {
+        target = 100;
+    }
+    return (uint8_t)target;
+}
+
+static void update_drag(const lv_point_t *point)
+{
+    if (point->x == ui.volume_last_point.x && point->y == ui.volume_last_point.y) {
+        return;
+    }
+    ui.volume_last_point = *point;
+
+    int32_t horizontal = point->x - ui.press_point.x;
+    int32_t vertical = point->y - ui.press_point.y;
+    int32_t horizontal_distance = abs(horizontal);
+    int32_t vertical_distance = abs(vertical);
+    if (horizontal_distance > TAP_THRESHOLD || vertical_distance > TAP_THRESHOLD) {
+        ui.press_moved = true;
+    }
+    bool vertical_started = false;
+    if (ui.gesture_axis == GESTURE_AXIS_NONE) {
+        if (horizontal_distance >= SWIPE_THRESHOLD
+            && horizontal_distance > vertical_distance * 3 / 2) {
+            ui.gesture_axis = GESTURE_AXIS_HORIZONTAL;
+        } else if (ui.volume_drag_available
+            && vertical_distance >= SWIPE_THRESHOLD
+            && vertical_distance > horizontal_distance * 3 / 2) {
+            ui.gesture_axis = GESTURE_AXIS_VERTICAL;
+            vertical_started = true;
+        }
+    }
+    if (ui.gesture_axis != GESTURE_AXIS_VERTICAL) {
+        return;
+    }
+
+    int64_t now = esp_timer_get_time();
+    ui.volume_final_pending = true;
+    ui.volume_final_deadline_us = now + VOLUME_FINAL_DELAY_US;
+    uint8_t target = calculate_volume_target(vertical);
+    bool target_changed = target != ui.volume_target_percent;
+    ui.volume_target_percent = target;
+    if (target_changed || vertical_started) {
+        hold_volume_feedback(target);
+    }
+    if (!volume_target_is_sent() && volume_enqueue_due(now)) {
+        enqueue_volume_target(now);
+    }
+}
+
+static void finish_volume_update(int64_t now)
+{
+    if (!ui.volume_final_pending || now < ui.volume_final_deadline_us) {
+        return;
+    }
+    if (!volume_target_is_sent()) {
+        if (!volume_enqueue_due(now)) {
+            ui.volume_final_deadline_us = ui.volume_last_attempt_us
+                + VOLUME_UPDATE_INTERVAL_US;
+            return;
+        }
+        if (!enqueue_volume_target(now)) {
+            ui.volume_final_deadline_us = now + VOLUME_UPDATE_INTERVAL_US;
+            return;
+        }
+    }
+    if (ui.press_active) {
+        return;
+    }
+    char text[sizeof("100%")];
+    format_volume_feedback(ui.volume_target_percent, text);
+    ui.volume_feedback_until_us = now + (int64_t)FEEDBACK_DURATION_MS * 1000;
+    show_feedback(text);
+    ui.volume_final_pending = false;
+}
+
+static void cancel_volume_gesture(void)
+{
+    bool vertical_press = ui.gesture_axis == GESTURE_AXIS_VERTICAL;
+    bool available_press = ui.press_active
+        && ui.volume_drag_available
+        && ui.gesture_axis == GESTURE_AXIS_NONE;
+    if (!vertical_press
+        && !ui.volume_final_pending
+        && !ui.volume_target_awaiting_snapshot
+        && !available_press) {
+        return;
+    }
+    lv_anim_delete(ui.feedback, feedback_opacity);
+    lv_obj_add_flag(ui.feedback, LV_OBJ_FLAG_HIDDEN);
+    if (vertical_press || available_press) {
+        ui.press_active = false;
+        ui.gesture_axis = GESTURE_AXIS_NONE;
+    }
+    ui.volume_drag_available = false;
+    ui.volume_final_pending = false;
+    ui.volume_target_awaiting_snapshot = false;
+    ui.volume_feedback_until_us = 0;
+}
+
 static void gesture_event(lv_event_t *event)
 {
     lv_event_code_t code = lv_event_get_code(event);
@@ -459,10 +652,36 @@ static void gesture_event(lv_event_t *event)
     if (code == LV_EVENT_PRESSED) {
         record_touch();
         lv_indev_get_point(input, &ui.press_point);
+        ui.volume_last_point = ui.press_point;
         ui.press_active = true;
+        ui.press_moved = false;
+        ui.gesture_axis = GESTURE_AXIS_NONE;
+        ui.volume_drag_available = ui.state.available
+            && ui.state.volume_available
+            && !ui.attribution_visible;
+        bool use_local_target = ui.volume_final_pending
+            || ui.volume_target_awaiting_snapshot;
+        ui.volume_start_percent = use_local_target
+            ? ui.volume_target_percent
+            : ui.state.volume_percent;
+        if (!use_local_target) {
+            ui.volume_target_percent = ui.volume_start_percent;
+            ui.volume_last_sent_percent = ui.volume_start_percent;
+            ui.volume_last_sent_valid = true;
+        }
         return;
     }
-    if (code == LV_EVENT_LONG_PRESSED && ui.press_active) {
+    if (code == LV_EVENT_PRESSING && ui.press_active) {
+        record_touch();
+        lv_point_t point;
+        lv_indev_get_point(input, &point);
+        update_drag(&point);
+        return;
+    }
+    if (code == LV_EVENT_LONG_PRESSED
+        && ui.press_active
+        && !ui.press_moved
+        && ui.gesture_axis == GESTURE_AXIS_NONE) {
         ui.press_active = false;
         show_attribution();
         return;
@@ -473,13 +692,19 @@ static void gesture_event(lv_event_t *event)
 
     lv_point_t released;
     lv_indev_get_point(input, &released);
+    update_drag(&released);
     ui.press_active = false;
     int32_t horizontal = released.x - ui.press_point.x;
     int32_t vertical = released.y - ui.press_point.y;
     int32_t horizontal_distance = abs(horizontal);
     int32_t vertical_distance = abs(vertical);
-    if (horizontal_distance >= SWIPE_THRESHOLD
-        && horizontal_distance > vertical_distance * 3 / 2) {
+    if (ui.gesture_axis == GESTURE_AXIS_VERTICAL) {
+        ui.volume_final_deadline_us = esp_timer_get_time() + VOLUME_FINAL_DELAY_US;
+        ui.gesture_axis = GESTURE_AXIS_NONE;
+        return;
+    }
+    if (ui.gesture_axis == GESTURE_AXIS_HORIZONTAL
+        && horizontal_distance >= SWIPE_THRESHOLD) {
         if (horizontal < 0) {
             animate_swipe(-1);
             send_gesture_command(SPOTIFY_COMMAND_PREVIOUS, 0);
@@ -487,9 +712,12 @@ static void gesture_event(lv_event_t *event)
             animate_swipe(1);
             send_gesture_command(SPOTIFY_COMMAND_NEXT, 0);
         }
-    } else if (horizontal_distance <= TAP_THRESHOLD && vertical_distance <= TAP_THRESHOLD) {
+    } else if (ui.gesture_axis == GESTURE_AXIS_NONE
+        && horizontal_distance <= TAP_THRESHOLD
+        && vertical_distance <= TAP_THRESHOLD) {
         handle_tap();
     }
+    ui.gesture_axis = GESTURE_AXIS_NONE;
 }
 
 static void create_offline_indicator(void)
@@ -534,6 +762,7 @@ static void create_feedback_layer(void)
     lv_obj_add_flag(ui.gesture_layer, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_flag(ui.gesture_layer, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(ui.gesture_layer, gesture_event, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(ui.gesture_layer, gesture_event, LV_EVENT_PRESSING, NULL);
     lv_obj_add_event_cb(ui.gesture_layer, gesture_event, LV_EVENT_RELEASED, NULL);
     lv_obj_add_event_cb(ui.gesture_layer, gesture_event, LV_EVENT_LONG_PRESSED, NULL);
     lv_obj_move_foreground(ui.feedback);
@@ -603,9 +832,17 @@ static void apply_art(bop_album_art_t *art)
 static void update_track(const playback_state_t *state)
 {
     bool track_changed = strcmp(ui.state.track_id, state->track_id) != 0;
+    int64_t now = esp_timer_get_time();
+    if (ui.volume_target_awaiting_snapshot
+        && state->volume_command_generation == ui.volume_snapshot_generation) {
+        ui.volume_target_awaiting_snapshot = false;
+    }
     ui.state = *state;
-    ui.state_received_us = esp_timer_get_time();
+    ui.state_received_us = now;
     ui.rendered_change_counter = state->change_counter;
+    if (!state->available || !state->volume_available) {
+        cancel_volume_gesture();
+    }
 
     if (!state->available) {
         if (ui.attribution_visible) {
@@ -701,6 +938,9 @@ static void process_command_results(void)
         if (result.command != SPOTIFY_COMMAND_TOGGLE || result.request_id == 0) {
             continue;
         }
+        if (volume_feedback_active()) {
+            continue;
+        }
         if (result.accepted) {
             show_feedback(result.was_playing ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
         } else if (result.rate_limited) {
@@ -738,6 +978,7 @@ static void ui_timer(lv_timer_t *timer)
             }
         }
     }
+    finish_volume_update(esp_timer_get_time());
     update_progress();
 }
 

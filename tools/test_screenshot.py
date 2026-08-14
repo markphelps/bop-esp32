@@ -470,13 +470,14 @@ def test_no_serial_command_can_reach_a_deleted_spotify_queue() -> None:
     assert source.count("vQueueDelete(") == publish.count("vQueueDelete(")
     # The locals publish only once every one of them exists, so a partial set is
     # never visible. command_queue is stored last and is the idempotency guard.
-    for handle in ("mutex", "cooldown", "commands", "results"):
+    for handle in ("mutex", "cooldown", "commands", "results", "volumes"):
         assert f"({handle} == NULL" in publish or f"|| {handle} == NULL" in publish
     assert publish.index("state_mutex = mutex;") < publish.index("command_queue = commands;")
     assert publish.index("cooldown_mutex = cooldown;") < publish.index("command_queue = commands;")
     assert publish.index("command_result_queue = results;") < publish.index(
         "command_queue = commands;"
     )
+    assert publish.index("volume_queue = volumes;") < publish.index("command_queue = commands;")
     # The sender gates on the started flag, not on a handle. A start that failed
     # after publication leaves the handles live and the flag false, so a command
     # is accepted only when a task is running to drain it.
@@ -600,17 +601,24 @@ def test_a_header_the_host_cannot_parse_stalls_instead_of_spending_the_deadline(
     costs the whole 30-second deadline and reports a timeout, which names the
     cable rather than the answer the device actually gave.
     """
-    for fields in ({"version": 2}, {"header_length": 23}):
+    invalid_headers = (
+        (2, screenshot.HEADER_LENGTH),
+        (screenshot.VERSION, 23),
+    )
+    for version, header_length in invalid_headers:
+        description = f"version={version}, header_length={header_length}"
         clock = SteppingClock()
         with patch.object(screenshot.time, "monotonic", clock):
             try:
-                screenshot.read_frame(FakeSerial([frame(**fields)]))
+                screenshot.read_frame(
+                    FakeSerial([frame(version=version, header_length=header_length)])
+                )
             except screenshot.ScreenshotTruncatedFrameError as error:
                 assert str(screenshot.STALL_SECONDS) in str(error)
             except screenshot.ScreenshotTimeoutError:
-                raise AssertionError(f"spent the whole deadline on {fields}") from None
+                raise AssertionError(f"spent the whole deadline on {description}") from None
             else:
-                raise AssertionError(f"accepted an unparsable header: {fields}")
+                raise AssertionError(f"accepted an unparsable header: {description}")
         # The stall ends the search on its own, well inside the deadline.
         assert clock.now < screenshot.FRAME_TIMEOUT_SECONDS
     # A discarded frame no longer reaches the pre-header limit, so that limit is

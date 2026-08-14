@@ -19,6 +19,8 @@ Use these gestures on the Bop screen:
 | --- | --- |
 | Swipe left | Previous track ⏮️ |
 | Swipe right | Next track ⏭️ |
+| Drag up | Increase volume 🔊 |
+| Drag down | Decrease volume 🔉 |
 | Short press | Play or pause ▶️ / ⏸️ |
 | Long press | Show the Spotify screen with a QR code for the current track 🎵 |
 

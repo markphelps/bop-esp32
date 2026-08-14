@@ -51,6 +51,7 @@ typedef struct {
     int64_t access_token_expires_at;
     response_buffer_t response;
     esp_http_client_handle_t api_client;
+    uint32_t volume_command_generation;
 } client_context_t;
 
 typedef struct {
@@ -58,12 +59,20 @@ typedef struct {
     uint32_t request_id;
 } spotify_command_request_t;
 
+typedef struct {
+    uint8_t volume_percent;
+    uint32_t generation;
+} spotify_volume_request_t;
+
 static SemaphoreHandle_t state_mutex;
 static SemaphoreHandle_t cooldown_mutex;
 static QueueHandle_t command_queue;
 static QueueHandle_t command_result_queue;
+static QueueHandle_t volume_queue;
+static TaskHandle_t client_task_handle;
 static playback_state_t current_state;
 static int64_t rate_limit_deadline_us;
+static uint32_t volume_request_generation;
 static bool state_ready;
 static atomic_bool client_started;
 
@@ -379,6 +388,9 @@ static bool playback_state_equal(const playback_state_t *left, const playback_st
         && left->is_playing == right->is_playing
         && left->progress_ms == right->progress_ms
         && left->duration_ms == right->duration_ms
+        && left->volume_percent == right->volume_percent
+        && left->volume_available == right->volume_available
+        && left->volume_command_generation == right->volume_command_generation
         && strcmp(left->track_id, right->track_id) == 0
         && strcmp(left->title, right->title) == 0
         && strcmp(left->artists, right->artists) == 0
@@ -444,9 +456,21 @@ static esp_err_t parse_playback(const char *json, playback_state_t *state)
     if (root == NULL) {
         return ESP_ERR_INVALID_RESPONSE;
     }
+    *state = (playback_state_t){0};
+    cJSON *device = cJSON_GetObjectItemCaseSensitive(root, "device");
+    cJSON *volume = cJSON_IsObject(device)
+        ? cJSON_GetObjectItemCaseSensitive(device, "volume_percent")
+        : NULL;
+    if (cJSON_IsNumber(volume)
+        && volume->valuedouble >= 0.0
+        && volume->valuedouble <= 100.0
+        && volume->valuedouble == (double)volume->valueint) {
+        state->volume_percent = (uint8_t)volume->valueint;
+        state->volume_available = true;
+    }
+
     cJSON *item = cJSON_GetObjectItemCaseSensitive(root, "item");
     if (cJSON_IsNull(item)) {
-        *state = (playback_state_t){0};
         cJSON_Delete(root);
         return ESP_OK;
     }
@@ -456,7 +480,7 @@ static esp_err_t parse_playback(const char *json, playback_state_t *state)
         return ESP_ERR_INVALID_RESPONSE;
     }
 
-    *state = (playback_state_t){.available = true};
+    state->available = true;
     strlcpy(state->title, title->valuestring, sizeof(state->title));
     cJSON *track_id = cJSON_GetObjectItemCaseSensitive(item, "id");
     if (cJSON_IsString(track_id) && track_id->valuestring != NULL) {
@@ -496,6 +520,7 @@ static esp_err_t parse_playback(const char *json, playback_state_t *state)
     state->progress_ms = json_uint32(progress);
     state->duration_ms = json_uint32(duration);
     state->is_playing = cJSON_IsTrue(is_playing);
+
     cJSON_Delete(root);
     return ESP_OK;
 }
@@ -506,7 +531,7 @@ static esp_err_t poll_current_playback(
     int status_code = 0;
     esp_err_t error = api_request(
         context,
-        "https://api.spotify.com/v1/me/player/currently-playing",
+        "https://api.spotify.com/v1/me/player",
         HTTP_METHOD_GET,
         &status_code,
         retry_after_seconds,
@@ -520,7 +545,9 @@ static esp_err_t poll_current_playback(
         return ESP_ERR_TIMEOUT;
     }
     if (status_code == 204) {
-        playback_state_t empty = {0};
+        playback_state_t empty = {
+            .volume_command_generation = context->volume_command_generation,
+        };
         publish_state(&empty);
         return ESP_OK;
     }
@@ -532,6 +559,7 @@ static esp_err_t poll_current_playback(
     playback_state_t next = {0};
     error = parse_playback(context->response.data, &next);
     if (error == ESP_OK) {
+        next.volume_command_generation = context->volume_command_generation;
         publish_state(&next);
     } else {
         ESP_LOGE(TAG, "Playback response is invalid");
@@ -592,6 +620,53 @@ static esp_err_t send_command(
         return ESP_FAIL;
     }
     ESP_LOGI(TAG, "%s command accepted", name);
+    return ESP_OK;
+}
+
+static esp_err_t send_volume(
+    client_context_t *context,
+    uint8_t volume_percent,
+    int64_t *retry_after_seconds,
+    bool *rate_limited)
+{
+    playback_state_t state = {0};
+    if (!bop_spotify_get_state(&state) || !state.volume_available) {
+        ESP_LOGW(TAG, "Volume command ignored because device volume is unavailable");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    char url[96];
+    int length = snprintf(
+        url,
+        sizeof(url),
+        "https://api.spotify.com/v1/me/player/volume?volume_percent=%u",
+        (unsigned int)volume_percent);
+    if (length < 0 || (size_t)length >= sizeof(url)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    ESP_LOGI(TAG, "Sending volume command (%u%%)", (unsigned int)volume_percent);
+    int status_code = 0;
+    esp_err_t error = api_request(
+        context,
+        url,
+        HTTP_METHOD_PUT,
+        &status_code,
+        retry_after_seconds,
+        rate_limited);
+    if (error != ESP_OK) {
+        ESP_LOGE(TAG, "Volume command failed: %s", esp_err_to_name(error));
+        return error;
+    }
+    if (status_code == 429) {
+        ESP_LOGW(TAG, "Spotify rate limit");
+        return ESP_ERR_TIMEOUT;
+    }
+    if (status_code != 204) {
+        ESP_LOGE(TAG, "Volume command failed (HTTP %d)", status_code);
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "Volume command accepted");
     return ESP_OK;
 }
 
@@ -671,7 +746,7 @@ static client_context_t *create_client_context(bop_credentials_t *credentials)
     }
 
     esp_http_client_config_t configuration = {
-        .url = "https://api.spotify.com/v1/me/player/currently-playing",
+        .url = "https://api.spotify.com/v1/me/player",
         .event_handler = collect_response,
         .user_data = &context->response,
         .crt_bundle_attach = esp_crt_bundle_attach,
@@ -708,19 +783,20 @@ static void client_task(void *argument)
     TickType_t poll_deadline = xTaskGetTickCount();
     spotify_command_request_t pending_command = {0};
     bool command_pending = false;
+    spotify_volume_request_t pending_volume = {0};
+    bool volume_pending = false;
 
     for (;;) {
         wait_for_rate_limit_expiry();
 
         bop_wifi_wait_connected();
         if (!command_pending) {
-            TickType_t wait = ticks_until(poll_deadline);
-            command_pending = xQueueReceive(command_queue, &pending_command, wait) == pdTRUE;
+            command_pending = xQueueReceive(command_queue, &pending_command, 0) == pdTRUE;
         }
-        bop_wifi_wait_connected();
 
         int64_t retry_after_seconds = 0;
         bool rate_limited = false;
+        bool request_completed = false;
         if (command_pending) {
             bool was_playing = false;
             esp_err_t command_error = send_command(
@@ -735,9 +811,40 @@ static void client_task(void *argument)
                 publish_command_result(&pending_command, false, true, was_playing);
                 continue;
             }
+            request_completed = true;
             publish_command_result(&pending_command, command_error == ESP_OK, false, was_playing);
             if (command_error != ESP_OK) {
-                ESP_LOGW(TAG, "Command was not applied");
+                ESP_LOGW(TAG, "Command was not applied; refreshing playback state");
+            }
+        }
+
+        spotify_volume_request_t newest_volume = {0};
+        if (xQueueReceive(volume_queue, &newest_volume, 0) == pdTRUE) {
+            pending_volume = newest_volume;
+            volume_pending = true;
+        }
+        if (volume_pending) {
+            esp_err_t volume_error = send_volume(
+                context,
+                pending_volume.volume_percent,
+                &retry_after_seconds,
+                &rate_limited);
+            if (rate_limited) {
+                start_rate_limit_cooldown(retry_after_seconds);
+                continue;
+            }
+            context->volume_command_generation = pending_volume.generation;
+            volume_pending = false;
+            request_completed = true;
+            if (volume_error != ESP_OK) {
+                ESP_LOGW(TAG, "Volume was not applied; refreshing playback state");
+            }
+        }
+
+        if (!request_completed) {
+            TickType_t wait = ticks_until(poll_deadline);
+            if (wait > 0) {
+                ulTaskNotifyTake(pdTRUE, wait);
                 continue;
             }
         }
@@ -775,7 +882,12 @@ static esp_err_t publish_shared_handles(void)
     SemaphoreHandle_t cooldown = xSemaphoreCreateMutex();
     QueueHandle_t commands = xQueueCreate(COMMAND_QUEUE_LENGTH, sizeof(spotify_command_request_t));
     QueueHandle_t results = xQueueCreate(COMMAND_QUEUE_LENGTH, sizeof(spotify_command_result_t));
-    if (mutex == NULL || cooldown == NULL || commands == NULL || results == NULL) {
+    QueueHandle_t volumes = xQueueCreate(1, sizeof(spotify_volume_request_t));
+    if (mutex == NULL
+        || cooldown == NULL
+        || commands == NULL
+        || results == NULL
+        || volumes == NULL) {
         if (mutex != NULL) {
             vSemaphoreDelete(mutex);
         }
@@ -788,11 +900,15 @@ static esp_err_t publish_shared_handles(void)
         if (results != NULL) {
             vQueueDelete(results);
         }
+        if (volumes != NULL) {
+            vQueueDelete(volumes);
+        }
         return ESP_ERR_NO_MEM;
     }
     state_mutex = mutex;
     cooldown_mutex = cooldown;
     command_result_queue = results;
+    volume_queue = volumes;
     command_queue = commands;
     return ESP_OK;
 }
@@ -827,9 +943,16 @@ esp_err_t bop_spotify_start(bop_credentials_t *credentials)
     }
     reset_playback_state();
     if (xTaskCreatePinnedToCore(
-            client_task, "spotify_client", 16384, context, 5, NULL, SPOTIFY_TASK_CORE)
+            client_task,
+            "spotify_client",
+            16384,
+            context,
+            5,
+            &client_task_handle,
+            SPOTIFY_TASK_CORE)
         != pdPASS) {
         destroy_client_context(context);
+        client_task_handle = NULL;
         return ESP_ERR_NO_MEM;
     }
     atomic_store(&client_started, true);
@@ -861,7 +984,10 @@ bool bop_spotify_commands_ready(void)
 spotify_command_submission_t bop_spotify_enqueue_command(
     spotify_command_t command, uint32_t request_id)
 {
-    if (!atomic_load(&client_started)) {
+    if (!atomic_load(&client_started)
+        || (command != SPOTIFY_COMMAND_NEXT
+            && command != SPOTIFY_COMMAND_PREVIOUS
+            && command != SPOTIFY_COMMAND_TOGGLE)) {
         return SPOTIFY_COMMAND_SUBMISSION_NOT_READY;
     }
     spotify_command_request_t request = {
@@ -876,7 +1002,40 @@ spotify_command_submission_t bop_spotify_enqueue_command(
             : SPOTIFY_COMMAND_SUBMISSION_QUEUE_FULL;
     }
     xSemaphoreGive(cooldown_mutex);
+    if (submission == SPOTIFY_COMMAND_SUBMISSION_QUEUED) {
+        xTaskNotifyGive(client_task_handle);
+    }
     return submission;
+}
+
+bool bop_spotify_enqueue_volume(uint8_t volume_percent)
+{
+    playback_state_t state = {0};
+    if (!atomic_load(&client_started)
+        || volume_percent > 100
+        || !bop_spotify_get_state(&state)
+        || !state.volume_available) {
+        return false;
+    }
+    uint32_t generation = volume_request_generation + 1;
+    if (generation == 0) {
+        generation = 1;
+    }
+    spotify_volume_request_t request = {
+        .volume_percent = volume_percent,
+        .generation = generation,
+    };
+    if (xQueueOverwrite(volume_queue, &request) != pdPASS) {
+        return false;
+    }
+    volume_request_generation = generation;
+    xTaskNotifyGive(client_task_handle);
+    return true;
+}
+
+uint32_t bop_spotify_get_volume_request_generation(void)
+{
+    return volume_request_generation;
 }
 
 bool bop_spotify_get_command_result(spotify_command_result_t *result)

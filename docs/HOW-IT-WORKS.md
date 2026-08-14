@@ -57,9 +57,19 @@ The board stores a rotated refresh token when Spotify returns one. NVS stores cr
 
 ## Playback and album art
 
-The Spotify task requests `GET /v1/me/player/currently-playing` every two seconds. It uses the ESP-IDF certificate bundle for HTTPS validation.
+The Spotify task requests `GET /v1/me/player`. It polls every 10 seconds while playback is active. It polls every 60 seconds while playback is paused or idle. A completed playback or volume command causes an immediate poll.
 
-A track change updates the protected playback snapshot. The UI shows the title, artist, progress, and album art.
+The task uses the ESP-IDF certificate bundle for HTTPS validation. It reads the active-device volume from `device.volume_percent`. A valid integer from 0 through 100 enables volume control. Bop intentionally ignores `device.supports_volume` and lets the volume request result decide whether control works.
+
+Each playback change updates a snapshot behind a mutex. The UI shows the title, artist, progress, and album art. It uses valid volume state to enable vertical drag.
+
+Normal playback commands use one request queue and one result queue. Volume commands use a separate one-slot overwrite queue. A new volume target replaces an older unsent target.
+
+Bop sends volume with `PUT /v1/me/player/volume?volume_percent=<value>`. The next playback snapshot carries the generation of the processed volume request. The UI uses this generation to replace its temporary local target with Spotify state.
+
+Spotify can return HTTP 429 with a `Retry-After` value. Bop accepts a positive numeric delay. It uses 60 seconds when the value is absent or invalid.
+
+The Spotify task stops all requests during this cooldown. New normal commands are rejected. A rejected tap shows a warning. Bop keeps the newest volume target and retries it after the cooldown.
 
 The art task downloads JPEG data into PSRAM. `esp_jpeg` decodes the image to RGB565 pixels.
 
@@ -71,11 +81,15 @@ The task retries a failed download or decode after 5 seconds. It does not downlo
 
 ## Touch controls and display care
 
-The UI records the touch position when a press starts. It compares the horizontal and vertical distance when the press ends.
+The UI records the first touch point and tracks movement while the press continues. Movement greater than 20 pixels prevents the press from opening the attribution screen. A stationary long press still opens that screen.
 
-A left swipe sends the previous-track command. A right swipe sends the next-track command. A small movement sends pause or play.
+After 48 pixels of dominant movement, the gesture locks to one axis. A left swipe sends the previous-track command. A right swipe sends the next-track command. A short press sends pause or play.
 
-The UI gives immediate feedback after an accepted command. The next Spotify response corrects the displayed play state when necessary.
+A vertical drag controls volume when Spotify reports a valid volume value. Up increases volume, and down decreases it. The UI measures movement across the 368-pixel artwork height and applies a power-1.8 curve. It clamps the target from 0 through 100 and shows the target percentage.
+
+Bop sends at most one changed volume target every 150 ms. It sends the final target after 400 ms without movement. The percentage remains visible until 750 ms after the final update.
+
+The UI gives immediate feedback after an accepted playback command. Volume feedback takes priority over delayed playback feedback. The next Spotify response corrects temporary play and volume state when necessary.
 
 The UI shows `offline` when WiFi is unavailable. The WiFi event handler reconnects when the access point returns. The Spotify task resumes polling after the connection returns.
 
@@ -91,7 +105,7 @@ The AMOLED panel is write-only, so the firmware cannot read pixels back from it.
 
 Close `mise run monitor` before a capture. The capture needs the USB serial port for itself. The command refuses an output file that already exists.
 
-The capture works in every screen state, the provisioning screen included, because the serial task starts before the credential check. The capture does not reset the board, and playback continues.
+The capture works in every screen state, including the provisioning screen. The serial task starts after the credential check on both provisioned and unprovisioned paths. The capture does not reset the board, and playback continues.
 
 ## mise tasks
 

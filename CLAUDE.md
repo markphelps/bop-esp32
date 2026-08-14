@@ -57,44 +57,62 @@ checks available without hardware.
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` is the only workflow. It runs five required checks on
-each pull request: `firmware`, `host-tools (linux)`, `python-style`, `secrets`,
-and `licenses`. Each host job runs the matching local `mise` task, from the
-versions that `mise.toml` pins. The `firmware` job is the exception: it runs
-`idf.py` inside the official ESP-IDF container, whose release must stay equal to
-`IDF_TAG` in `tools/setup_idf.py`. No check holds those two together, so move
-both when you move one. CI is Linux only. macOS is tested locally on the board,
-and Windows is not tested.
+`.github/workflows/ci.yml` is the only workflow. It runs five required checks
+when a pull request changes a non-Markdown path: `firmware`, `host-tools
+(linux)`, `python-style`, `secrets`, and `licenses`. A change that contains only
+`**/*.md` files does not start the workflow. Each host job runs the matching
+local `mise` task, from the versions that `mise.toml` pins. The `firmware` job
+is the exception: it runs `idf.py` inside the official ESP-IDF container, whose
+release must stay equal to `IDF_TAG` in `tools/setup_idf.py`. No check holds
+those two together, so move both when you move one. CI is Linux only. macOS is
+tested locally on the board, and Windows is not tested.
 
 ## Firmware architecture
 
-`app_main` (`firmware/main/app_main.c`) starts the display first, then reads the
-credentials, then starts the rest. If NVS holds no credentials, the app shows a
-"run: mise run provision" screen and starts nothing else.
+`app_main` (`firmware/main/app_main.c`) starts the display, screenshot state,
+and power monitor before it reads credentials. If NVS holds no credentials,
+the app shows a "run: mise run provision" screen and starts the screenshot
+serial task. It does not start the Bop UI, album-art, WiFi, or Spotify tasks.
 
 Work is divided across the two cores:
 
 - Core 1 runs the LVGL task and the 250 ms `ui_timer` in `ui/ui.c`.
-- Core 0 runs WiFi, the Spotify client task, the album-art task, the
-  one-minute soak diagnostics task, and the `bop_screenshot` serial task in
-  `screenshot.c`. That task starts even when the mirror buffers failed to
-  allocate, and even on an unprovisioned board, because the host still reaches
-  it. A serial path that never came up is the exception:
+- Core 0 runs WiFi, the Spotify client task, the album-art task, and the
+  `bop_screenshot` serial task in `screenshot.c`. That task starts even when
+  the mirror buffers failed to allocate, and even on an unprovisioned board,
+  because the host still reaches it. A serial path that never came up is the
+  exception:
   `bop_screenshot_start` refuses when either mutex is NULL, because every
   response path takes them.
+- The AXP2101 power monitor and one-minute soak diagnostics use unpinned tasks.
+  FreeRTOS can schedule each task on either core.
 
-Data moves one way. The Spotify task polls `currently-playing` every two
-seconds and publishes a `playback_state_t` snapshot behind a mutex. Each real
-change increments `change_counter`. The UI timer copies that snapshot with
+Data moves one way. The Spotify task polls `GET /v1/me/player` every 10
+seconds while playback is active and every 60 seconds while it is paused or
+idle. A completed normal or volume command causes an immediate poll. The task
+publishes a `playback_state_t` snapshot behind a mutex. Each real change
+increments `change_counter`. The UI timer copies that snapshot with
 `bop_spotify_get_state` and redraws only when the counter moves.
 
-Commands move back through queues, never through direct calls. A gesture calls
-`bop_spotify_enqueue_command`, the client task sends the request, and the
-result returns on a second queue that `process_command_results` drains. The
-serial task also produces on that queue: the `n`, `b`, and `t` keys enqueue the
-same commands. The UI shows the new play state immediately, then
-the next snapshot corrects it. The `optimistic_*` fields in `ui_context_t` hold
-that short window.
+Normal commands move through a request queue, never through direct calls. A
+gesture calls `bop_spotify_enqueue_command`, the client task sends the request,
+and a result queue returns accepted tap results to `process_command_results`.
+The serial task also produces normal command requests: the `n`, `b`, and `t`
+keys enqueue with request ID zero, so they do not produce UI result messages.
+The UI shows a new play state immediately. The next snapshot corrects it. The
+`optimistic_*` fields in `ui_context_t` hold that short window.
+
+Volume uses a separate one-slot overwrite queue. The newest unsent target
+replaces the older one. The client sends `PUT /v1/me/player/volume`, then the
+next playback snapshot carries the processed request generation. The UI uses
+that generation to reconcile its temporary volume target with Spotify state.
+A valid integer `device.volume_percent` enables the gesture. Bop intentionally
+ignores `device.supports_volume`.
+
+A Spotify 429 response starts a cooldown from a positive numeric `Retry-After`
+value, or 60 seconds when that value is invalid. The client stops all requests
+during the cooldown. New normal commands are rejected. The newest volume
+target remains pending and retries after the cooldown.
 
 The art pipeline (`ui/art.c`) is a third producer. It downloads the JPEG into
 PSRAM, decodes it with `esp_jpeg`, scales it to 368 pixels, and averages the
@@ -185,11 +203,12 @@ only, `RuntimeError` messages that name the fix, and exit code 130 on
 
 Some host checks assert on the text of other sources.
 `test_display_recovery.py` reads `app_main.c`. `test_playback_feedback.py`
-reads `ui.c` and `spotify.c`. `test_deprovision.py` reads `app_main.c`,
+reads `ui.c`, `spotify.c`, and `spotify.h`. `test_deprovision.py` reads `app_main.c`,
 `firmware/CMakeLists.txt`, and `firmware/partitions.csv`. `test_provision.py`
-reads `credentials.c`. `test_screenshot.py` reads `screenshot.c` and
-`app_main.c`, and it slices `screenshot.c` by function name, so it also pins
-the order of those functions. `test_backup.py` and `test_task_cancellation.py`
+reads `credentials.c`. `test_screenshot.py` reads `screenshot.c`,
+`app_main.c`, and `spotify.c`. It slices `screenshot.c` by function name, so it
+also pins the order of those
+functions. `test_backup.py` and `test_task_cancellation.py`
 read `mise.toml` and assert on the task definitions. An edit to those files can
 turn the checks red even when the code is correct. Read the failing assertion,
 then decide whether the check or the code is wrong.

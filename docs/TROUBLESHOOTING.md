@@ -74,17 +74,39 @@ Then run `mise run provision` again.
 Bop has no active Spotify player to control. Start Spotify playback on any
 device that uses the authorized account. Then wait for Bop to poll Spotify.
 
+Bop polls every 10 seconds while playback is active. It polls every 60 seconds
+while playback is paused or idle. A newly active player can take up to 60
+seconds to appear.
+
 A paused player can still appear in Bop after Spotify returns playback state.
 If no playback appears, make sure that WiFi and authorization work. Then read
 the serial log.
 
 ## Spotify rate limiting delays playback updates
 
-Spotify can return a rate limit. Bop waits for the delay that Spotify sends,
-or one second when Spotify sends no delay.
+Spotify can return a rate limit. Bop waits for a positive numeric delay from
+Spotify. It waits for 60 seconds when Spotify sends no valid delay.
 
-Wait for Bop to resume polling. Do not send more touch commands during the
-wait. Read the serial log if rate limits happen often.
+Bop stops polling during the cooldown. It rejects new normal playback
+commands. An affected tap shows a warning. Bop keeps only the newest volume
+target and retries it after the cooldown.
+
+Wait for Bop to resume polling. More input does not bypass the cooldown. Read
+the serial log if rate limits happen often.
+
+## Volume drag does not change the active player
+
+Bop enables volume drag when Spotify returns `device.volume_percent` as an
+integer from 0 through 100. Bop ignores `device.supports_volume` and sends the
+request when that value is valid.
+
+Drag at least 48 pixels in a mostly vertical direction. The target percentage
+must appear on the artwork. If no percentage appears, read the serial log and
+confirm that playback state is available.
+
+Spotify can reject the request after Bop shows the target. The serial log then
+shows `Volume command failed`. The next playback poll restores the volume that
+Spotify reports.
 
 ## Album art does not appear
 

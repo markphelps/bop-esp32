@@ -23,6 +23,9 @@ typedef struct {
     char album_art_url[BOP_ALBUM_ART_URL_CAPACITY];
     uint32_t progress_ms;
     uint32_t duration_ms;
+    uint8_t volume_percent;
+    bool volume_available;
+    uint32_t volume_command_generation;
     uint32_t change_counter;
 } playback_state_t;
 
@@ -30,6 +33,7 @@ typedef enum {
     SPOTIFY_COMMAND_NEXT,
     SPOTIFY_COMMAND_PREVIOUS,
     SPOTIFY_COMMAND_TOGGLE,
+    SPOTIFY_COMMAND_SET_VOLUME,
 } spotify_command_t;
 
 typedef enum {
@@ -52,4 +56,6 @@ bool bop_spotify_get_state(playback_state_t *state);
 bool bop_spotify_commands_ready(void);
 spotify_command_submission_t bop_spotify_enqueue_command(
     spotify_command_t command, uint32_t request_id);
+bool bop_spotify_enqueue_volume(uint8_t volume_percent);
+uint32_t bop_spotify_get_volume_request_generation(void);
 bool bop_spotify_get_command_result(spotify_command_result_t *result);

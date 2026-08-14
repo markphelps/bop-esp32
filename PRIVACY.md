@@ -1,6 +1,6 @@
 # Bop Privacy Policy
 
-Last updated: August 11, 2026
+Last updated: August 14, 2026
 
 ## Summary
 
@@ -16,7 +16,7 @@ During provisioning, Bop asks for:
 - Your Spotify application client ID.
 - A Spotify refresh token after you approve Spotify authorization.
 
-While Bop runs, it uses the refresh token to request an access token. It requests your current playback state and can send playback-control requests. This can include a track title, artist names, album artwork, track identifier, and playback position.
+While Bop runs, it uses the refresh token to request an access token. It requests your current playback state and can send playback-control requests. This can include a track title, artist names, album artwork, track identifier, playback position, and active-device volume.
 
 ## Where data stays and why Bop uses it
 
