@@ -198,6 +198,132 @@ def test_the_log_hook_is_never_installed_over_a_null_forward_pointer() -> None:
     assert "if (previous != NULL) {" in initialization
 
 
+def test_missing_mirror_buffers_fail_initialization_but_keep_the_serial_task() -> None:
+    """A failed PSRAM allocation is reported once at startup and stops nothing.
+
+    Without the mirror every capture waits the full one-second refresh timeout,
+    logs a refresh warning that names the wrong cause, and answers the
+    no-memory status. An ESP_OK return kept that persistent state off the log.
+    The serial task still starts, because status 2 and the n, b, and t keys are
+    host-visible behaviors that work without the mirror.
+    """
+    initialization = firmware_function(
+        "esp_err_t bop_screenshot_init", "esp_err_t bop_screenshot_start"
+    )
+    allocation = initialization[initialization.index("heap_caps_malloc") :]
+    assert "return ESP_ERR_NO_MEM;" in allocation
+    assert allocation.count("return ESP_OK;") == 1
+    assert allocation.index("return ESP_ERR_NO_MEM;") < allocation.index("return ESP_OK;")
+    # The globals take the pointers only after both allocations succeed, so the
+    # failure path never frees a buffer the LVGL task can still reach through a
+    # global. bop_screenshot_mirror_area tests mirror_buffer outside the mutex.
+    failure = allocation[: allocation.index("return ESP_ERR_NO_MEM;")]
+    assert "mirror_buffer" not in failure
+    assert "staging_buffer" not in failure
+    assert failure.count("heap_caps_free(") == 2
+    published = allocation[allocation.index("return ESP_ERR_NO_MEM;") :]
+    assert published.index("mirror_buffer = ") < published.index("return ESP_OK;")
+    assert published.index("staging_buffer = ") < published.index("return ESP_OK;")
+
+    start = firmware_function("esp_err_t bop_screenshot_start", "void bop_screenshot_mirror_area")
+    # The mutexes are the one state the task cannot run without: every response
+    # path takes them. The buffers are not, so the task creation sits outside
+    # the buffer condition. The refusal has to belong to the mutex guard, not
+    # to some other guard that happens to return the same code.
+    assert (
+        "    if (mirror_mutex == NULL || serial_output_mutex == NULL) {\n"
+        "        return ESP_ERR_INVALID_STATE;\n"
+        "    }\n"
+    ) in start
+    assert start.count("return ESP_ERR_INVALID_STATE;") == 1
+    assert start.index("return ESP_ERR_INVALID_STATE;") < start.index("if (mirror_buffer != NULL")
+    assert "    }\n    if (xTaskCreatePinnedToCore(" in start
+    # Nesting is not the whole requirement. An early return added anywhere ahead
+    # of the task creation leaves the creation unnested and still takes status 2
+    # and the n, b, and t keys away from a board that ran out of PSRAM. So the
+    # span runs from the head of the function, not from the mutex guard: a
+    # refusal added above that guard reintroduces the same regression. Exactly
+    # three returns belong in the span — the null-display guard, the mutex
+    # guard, and the refresh timer failure inside the buffer block.
+    before_task = start[
+        start.index("if (display == NULL)") : start.index("if (xTaskCreatePinnedToCore(")
+    ]
+    assert before_task.count("return ") == 3
+    assert before_task.count("return ESP_ERR_INVALID_ARG;") == 1
+    assert before_task.count("return ESP_ERR_NO_MEM;") == 1
+
+    source = (ROOT / "firmware/main/app_main.c").read_text(encoding="utf-8")
+    main = source[source.index("void app_main(void)") :]
+    # Anchored on the call, because the guard text repeats after the start call:
+    # an index on the guard alone still passes when this report is deleted.
+    call = "esp_err_t screenshot_error = bop_screenshot_init();"
+    assert call in main
+    after_call = main[main.index(call) + len(call) :]
+    report = after_call[: after_call.index("\n    }")]
+    assert report.lstrip().startswith("if (screenshot_error != ESP_OK) {")
+    assert report.count("ESP_LOG") == 1
+    assert report.count("esp_err_to_name(screenshot_error)") == 1
+    # The block reports and does nothing else, and no later refusal stands
+    # between it and the start call either. Both take status 2 and the n, b,
+    # and t keys away from the board that ran out of PSRAM. Exactly one return
+    # belongs in that span, the LVGL lock guard, and it fails the display for
+    # every caller rather than for the screenshot alone.
+    assert "return" not in report
+    # The start is a whole statement, so the text below is the whole call. A
+    # ternary that withholds the call on screenshot_error passes the "if ("
+    # count further down, because it adds no "if (" of its own.
+    start_call = "screenshot_error = bop_screenshot_start(display);"
+    assert start_call in after_call
+    before_start = after_call[: after_call.index(start_call)]
+    assert before_start.count("return") == 1
+    assert "if (!bsp_display_lock(0)) {" in before_start
+    # No condition on the initialization result stands in front of the start.
+    condition = main[main.index("if (ui_error == ESP_OK") :]
+    assert condition[: condition.index("\n")] == "if (ui_error == ESP_OK) {"
+    assert condition[: condition.index("bop_screenshot_start(display)")].count("if (") == 1
+    assert main.index("bop_screenshot_init()") < main.index("bop_screenshot_start(display)")
+
+
+def test_no_initialization_failure_leaks_a_mutex() -> None:
+    """Both early returns free whichever mutex exists.
+
+    The recursive mirror mutex can be created while the serial output mutex
+    fails, so a bare pair of deletes either leaks the survivor or hands
+    vSemaphoreDelete a NULL handle.
+    """
+    cleanup = firmware_function("static void delete_mutexes", "static int serial_log_vprintf")
+    # Each delete sits inside its own guard and clears its handle. Without the
+    # clear, bop_screenshot_start sees two dangling handles, starts the task,
+    # and the task takes a freed semaphore on the first byte it reads.
+    assert (
+        "    if (mirror_mutex != NULL) {\n"
+        "        vSemaphoreDelete(mirror_mutex);\n"
+        "        mirror_mutex = NULL;\n"
+        "    }\n"
+    ) in cleanup
+    assert (
+        "    if (serial_output_mutex != NULL) {\n"
+        "        vSemaphoreDelete(serial_output_mutex);\n"
+        "        serial_output_mutex = NULL;\n"
+        "    }\n"
+    ) in cleanup
+    assert cleanup.count("vSemaphoreDelete(") == 2
+
+    initialization = firmware_function(
+        "esp_err_t bop_screenshot_init", "esp_err_t bop_screenshot_start"
+    )
+    assert initialization.count("delete_mutexes();") == 2
+    assert "vSemaphoreDelete(" not in initialization
+    creation_failure = initialization[
+        initialization.index("if (mirror_mutex == NULL || serial_output_mutex == NULL) {") :
+    ]
+    assert (
+        "delete_mutexes();" in creation_failure[: creation_failure.index("return ESP_ERR_NO_MEM;")]
+    )
+    driver_failure = initialization[initialization.index("usb_serial_jtag_driver_install") :]
+    assert "delete_mutexes();" in driver_failure[: driver_failure.index("return error;")]
+
+
 def test_screenshot_refresh_runs_in_the_lvgl_task() -> None:
     source = (ROOT / "firmware/main/screenshot.c").read_text(encoding="utf-8")
     timer_start = source.index("static void refresh_timer")
@@ -442,6 +568,8 @@ def main() -> int:
     test_one_serial_budget_covers_a_whole_screenshot_frame()
     test_an_abandoned_frame_releases_the_mutex_and_is_reported_once()
     test_the_log_hook_is_never_installed_over_a_null_forward_pointer()
+    test_missing_mirror_buffers_fail_initialization_but_keep_the_serial_task()
+    test_no_initialization_failure_leaks_a_mutex()
     test_screenshot_refresh_runs_in_the_lvgl_task()
     test_refresh_timer_is_created_before_the_main_task_unlocks_lvgl()
     test_fragmented_frame_and_split_magic()

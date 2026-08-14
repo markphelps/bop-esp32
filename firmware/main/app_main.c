@@ -191,9 +191,9 @@ void app_main(void)
         ESP_LOGE(TAG, "Display start failed");
         return;
     }
-    const bool screenshot_ready = bop_screenshot_init() == ESP_OK;
-    if (!screenshot_ready) {
-        ESP_LOGW(TAG, "Screenshot initialization failed");
+    esp_err_t screenshot_error = bop_screenshot_init();
+    if (screenshot_error != ESP_OK) {
+        ESP_LOGW(TAG, "Screenshot initialization failed: %s", esp_err_to_name(screenshot_error));
     }
     ESP_ERROR_CHECK(bsp_display_brightness_set(85));
     esp_err_t power_error = bop_power_start();
@@ -217,8 +217,11 @@ void app_main(void)
     } else {
         create_placeholder("run:\nmise run provision");
     }
-    if (ui_error == ESP_OK && screenshot_ready) {
-        esp_err_t screenshot_error = bop_screenshot_start(display);
+    // The start runs after an initialization error too, because the serial task
+    // answers the host with or without the mirror. bop_screenshot_start refuses
+    // on its own when the serial path never came up.
+    if (ui_error == ESP_OK) {
+        screenshot_error = bop_screenshot_start(display);
         if (screenshot_error != ESP_OK) {
             ESP_LOGW(TAG, "Screenshot task start failed: %s", esp_err_to_name(screenshot_error));
         }

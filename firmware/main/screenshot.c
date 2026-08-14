@@ -58,6 +58,20 @@ static TaskHandle_t screenshot_task_handle;
 static bool mirror_ready;
 static bool refresh_requested;
 
+// Free whichever mutex exists. One creation can fail while the other succeeds,
+// and vSemaphoreDelete does not accept a NULL handle.
+static void delete_mutexes(void)
+{
+    if (mirror_mutex != NULL) {
+        vSemaphoreDelete(mirror_mutex);
+        mirror_mutex = NULL;
+    }
+    if (serial_output_mutex != NULL) {
+        vSemaphoreDelete(serial_output_mutex);
+        serial_output_mutex = NULL;
+    }
+}
+
 static int serial_log_vprintf(const char *format, va_list arguments)
 {
     xSemaphoreTake(serial_output_mutex, portMAX_DELAY);
@@ -258,6 +272,7 @@ esp_err_t bop_screenshot_init(void)
     mirror_mutex = xSemaphoreCreateRecursiveMutex();
     serial_output_mutex = xSemaphoreCreateMutex();
     if (mirror_mutex == NULL || serial_output_mutex == NULL) {
+        delete_mutexes();
         return ESP_ERR_NO_MEM;
     }
 
@@ -267,10 +282,7 @@ esp_err_t bop_screenshot_init(void)
     };
     esp_err_t error = usb_serial_jtag_driver_install(&serial_configuration);
     if (error != ESP_OK) {
-        vSemaphoreDelete(mirror_mutex);
-        vSemaphoreDelete(serial_output_mutex);
-        mirror_mutex = NULL;
-        serial_output_mutex = NULL;
+        delete_mutexes();
         return error;
     }
     usb_serial_jtag_vfs_use_driver();
@@ -282,16 +294,26 @@ esp_err_t bop_screenshot_init(void)
         original_vprintf = previous;
     }
 
-    mirror_buffer = heap_caps_malloc(
+    // The allocations land in locals first. bop_screenshot_mirror_area tests
+    // mirror_buffer outside the mutex, and the LVGL task on core 1 is already
+    // running when this function is called, so a global that briefly holds a
+    // pointer this function then frees is a window where a flush writes into
+    // released PSRAM.
+    uint8_t *mirror = heap_caps_malloc(
         BOP_SCREENSHOT_PAYLOAD_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    staging_buffer = heap_caps_malloc(
+    uint8_t *staging = heap_caps_malloc(
         BOP_SCREENSHOT_PAYLOAD_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (mirror_buffer == NULL || staging_buffer == NULL) {
-        heap_caps_free(mirror_buffer);
-        heap_caps_free(staging_buffer);
-        mirror_buffer = NULL;
-        staging_buffer = NULL;
+    if (mirror == NULL || staging == NULL) {
+        // One failed allocation makes the mirror unusable, so the other buffer
+        // goes back too. The caller reports this error and still starts the
+        // serial task: without the mirror the task answers the no-memory
+        // status and still accepts the playback keys.
+        heap_caps_free(mirror);
+        heap_caps_free(staging);
+        return ESP_ERR_NO_MEM;
     }
+    mirror_buffer = mirror;
+    staging_buffer = staging;
     return ESP_OK;
 }
 
@@ -299,6 +321,13 @@ esp_err_t bop_screenshot_start(lv_display_t *display)
 {
     if (display == NULL) {
         return ESP_ERR_INVALID_ARG;
+    }
+    // The caller starts the task after an initialization error, because a
+    // missing mirror still leaves a task that answers the host. The mutexes are
+    // the exception: without them the serial driver never came up, and every
+    // response path would take a NULL handle.
+    if (mirror_mutex == NULL || serial_output_mutex == NULL) {
+        return ESP_ERR_INVALID_STATE;
     }
     if (mirror_buffer != NULL && staging_buffer != NULL) {
         lv_display_add_event_cb(display, render_event, LV_EVENT_RENDER_START, NULL);
