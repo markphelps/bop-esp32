@@ -10,7 +10,6 @@
 #include "bsp/display.h"
 #include "bsp/touch.h"
 #include "credentials.h"
-#include "diagnostics.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
 #include "esp_lvgl_port_touch.h"
@@ -235,10 +234,6 @@ void app_main(void)
     if (!provisioned) {
         ESP_LOGW(TAG, "Provisioning values are missing: %s", esp_err_to_name(credentials_error));
         return;
-    }
-    esp_err_t diagnostics_error = bop_diagnostics_start();
-    if (diagnostics_error != ESP_OK) {
-        ESP_LOGW(TAG, "Soak diagnostics did not start: %s", esp_err_to_name(diagnostics_error));
     }
     if (xTaskCreatePinnedToCore(
             startup_task, "bop_startup", 16384, &credentials, 5, NULL, SPOTIFY_TASK_CORE)

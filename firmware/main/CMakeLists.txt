@@ -5,7 +5,6 @@ idf_component_register(
     SRCS
         "app_main.c"
         "credentials.c"
-        "diagnostics.c"
         "power.c"
         "screenshot.c"
         "spotify/spotify.c"

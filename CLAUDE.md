@@ -84,8 +84,8 @@ Work is divided across the two cores:
   exception:
   `bop_screenshot_start` refuses when either mutex is NULL, because every
   response path takes them.
-- The AXP2101 power monitor and one-minute soak diagnostics use unpinned tasks.
-  FreeRTOS can schedule each task on either core.
+- The AXP2101 power monitor uses an unpinned task. FreeRTOS can schedule this
+  task on either core.
 
 Data moves one way. The Spotify task polls `GET /v1/me/player` every 10
 seconds while playback is active and every 60 seconds while it is paused or
