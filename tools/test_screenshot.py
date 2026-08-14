@@ -404,6 +404,28 @@ def test_no_initialization_failure_leaks_a_mutex() -> None:
     assert "delete_mutexes();" in driver_failure[: driver_failure.index("return error;")]
 
 
+def test_a_capture_wait_drains_the_notification_a_late_render_left() -> None:
+    """The drain is what stops one slow render costing every later capture.
+
+    A render that finishes after its wait timed out leaves a notification
+    behind. Without the zero-tick take below, the next wait takes that stale
+    notification at once and answers not-ready, and the refresh timer re-arms
+    it, so the board serves no further capture until it restarts.
+
+    `assert "ulTaskNotifyTake" in source` does not pin this. The timed wait on
+    the last line satisfied it before the drain existed.
+    """
+    refresh = firmware_function("static bool request_refresh", "static void screenshot_task")
+    drain = "ulTaskNotifyTake(pdTRUE, 0);"
+    assert refresh.count("ulTaskNotifyTake") == 2
+    assert drain in refresh
+    # Inside the mutex, so no render can post between the drain and the
+    # request, and before the flag, so the drain cannot swallow this request's
+    # own notification.
+    assert refresh.index("xSemaphoreTakeRecursive(mirror_mutex") < refresh.index(drain)
+    assert refresh.index(drain) < refresh.index("refresh_requested = true;")
+
+
 def test_screenshot_refresh_runs_in_the_lvgl_task() -> None:
     source = (ROOT / "firmware/main/screenshot.c").read_text(encoding="utf-8")
     timer_start = source.index("static void refresh_timer")
@@ -751,6 +773,7 @@ def main() -> int:
     test_a_second_initialization_never_deletes_the_mutex_the_log_hook_uses()
     test_missing_mirror_buffers_fail_initialization_but_keep_the_serial_task()
     test_no_initialization_failure_leaks_a_mutex()
+    test_a_capture_wait_drains_the_notification_a_late_render_left()
     test_screenshot_refresh_runs_in_the_lvgl_task()
     test_refresh_timer_is_created_before_the_main_task_unlocks_lvgl()
     test_fragmented_frame_and_split_magic()
