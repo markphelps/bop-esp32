@@ -107,7 +107,9 @@ Run `mise install` first. It installs the pinned host tools and then runs `mise 
 | `mise run provision` | Authorizes Spotify and writes WiFi and Spotify values to NVS. |
 | `mise run deprovision` | Opens Spotify access removal, then erases Bop credentials through USB. |
 | `mise run flash` | Flashes normal firmware after a credential-free backup. |
+| `mise run flash -- --force` | Flashes normal firmware and takes no backup. It warns in one line. |
 | `mise run flash-perf` | Flashes performance firmware after a credential-free backup. |
+| `mise run flash-perf -- --force` | Flashes performance firmware and takes no backup. |
 | `mise run monitor` | Opens the normal-firmware serial monitor. |
 | `mise run monitor-perf` | Opens the performance-firmware serial monitor. |
 | `mise run screenshot -- <output.png>` | Saves the live Bop screen as a PNG file. |
@@ -121,5 +123,7 @@ Run `mise install` first. It installs the pinned host tools and then runs `mise 
 | `mise run menuconfig` | Opens the ESP-IDF configuration menu. |
 
 A backup made before the first flash protects the factory image. A backup made after deprovisioning can contain Bop firmware. Do not run a full backup after provisioning.
+
+`-- --force` skips the backup step only. No flag makes the backup command copy a provisioned board. A flash after `-- --force` leaves the board with no new factory image to restore from.
 
 Read [INSTALL.md](../INSTALL.md) for the supported installation and recovery procedures. Read [docs/TROUBLESHOOTING.md](TROUBLESHOOTING.md) when a command stops.

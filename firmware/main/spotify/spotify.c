@@ -6,6 +6,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -64,7 +65,7 @@ static QueueHandle_t command_result_queue;
 static playback_state_t current_state;
 static int64_t rate_limit_deadline_us;
 static bool state_ready;
-static bool client_started;
+static atomic_bool client_started;
 
 static bool is_positive_decimal(const char *value)
 {
@@ -757,65 +758,81 @@ static void client_task(void *argument)
     }
 }
 
-esp_err_t bop_spotify_start(bop_credentials_t *credentials)
+/* The mutex and the queues are shared with the UI task and the screenshot
+   task, and those tasks reach the accessors below before this function
+   returns. A handle they can already hold must therefore never be deleted:
+   their NULL check reads the handle once, and a delete that lands after that
+   read leaves them sending on freed memory. So a handle is published only
+   once every handle exists, and a published handle lives for the life of the
+   firmware. The locals here are invisible to the other tasks until the last
+   store, which is what makes deleting them on the failure path safe. */
+static esp_err_t publish_shared_handles(void)
 {
-    if (credentials == NULL || client_started) {
-        return ESP_ERR_INVALID_STATE;
+    if (command_queue != NULL) {
+        return ESP_OK;
     }
-    state_mutex = xSemaphoreCreateMutex();
-    cooldown_mutex = xSemaphoreCreateMutex();
-    command_queue = xQueueCreate(COMMAND_QUEUE_LENGTH, sizeof(spotify_command_request_t));
-    command_result_queue = xQueueCreate(COMMAND_QUEUE_LENGTH, sizeof(spotify_command_result_t));
-    if (state_mutex == NULL || cooldown_mutex == NULL || command_queue == NULL || command_result_queue == NULL) {
-        if (state_mutex != NULL) {
-            vSemaphoreDelete(state_mutex);
-            state_mutex = NULL;
+    SemaphoreHandle_t mutex = xSemaphoreCreateMutex();
+    SemaphoreHandle_t cooldown = xSemaphoreCreateMutex();
+    QueueHandle_t commands = xQueueCreate(COMMAND_QUEUE_LENGTH, sizeof(spotify_command_request_t));
+    QueueHandle_t results = xQueueCreate(COMMAND_QUEUE_LENGTH, sizeof(spotify_command_result_t));
+    if (mutex == NULL || cooldown == NULL || commands == NULL || results == NULL) {
+        if (mutex != NULL) {
+            vSemaphoreDelete(mutex);
         }
-        if (cooldown_mutex != NULL) {
-            vSemaphoreDelete(cooldown_mutex);
-            cooldown_mutex = NULL;
+        if (cooldown != NULL) {
+            vSemaphoreDelete(cooldown);
         }
-        if (command_queue != NULL) {
-            vQueueDelete(command_queue);
-            command_queue = NULL;
+        if (commands != NULL) {
+            vQueueDelete(commands);
         }
-        if (command_result_queue != NULL) {
-            vQueueDelete(command_result_queue);
-            command_result_queue = NULL;
+        if (results != NULL) {
+            vQueueDelete(results);
         }
         return ESP_ERR_NO_MEM;
     }
+    state_mutex = mutex;
+    cooldown_mutex = cooldown;
+    command_result_queue = results;
+    command_queue = commands;
+    return ESP_OK;
+}
 
-    client_context_t *context = create_client_context(credentials);
-    if (context == NULL) {
-        vSemaphoreDelete(state_mutex);
-        vSemaphoreDelete(cooldown_mutex);
-        vQueueDelete(command_queue);
-        vQueueDelete(command_result_queue);
-        state_mutex = NULL;
-        cooldown_mutex = NULL;
-        command_queue = NULL;
-        command_result_queue = NULL;
-        return ESP_ERR_NO_MEM;
-    }
+static void reset_playback_state(void)
+{
+    xSemaphoreTake(state_mutex, portMAX_DELAY);
     mbedtls_platform_zeroize(&current_state, sizeof(current_state));
     state_ready = false;
+    xSemaphoreGive(state_mutex);
+    /* The cooldown deadline belongs to cooldown_mutex, not to state_mutex.
+       Nothing else holds it yet, but taking it here keeps every write to the
+       field under the one lock that owns it. */
+    xSemaphoreTake(cooldown_mutex, portMAX_DELAY);
     rate_limit_deadline_us = 0;
+    xSemaphoreGive(cooldown_mutex);
+}
+
+esp_err_t bop_spotify_start(bop_credentials_t *credentials)
+{
+    if (credentials == NULL || atomic_load(&client_started)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    client_context_t *context = create_client_context(credentials);
+    if (context == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    esp_err_t error = publish_shared_handles();
+    if (error != ESP_OK) {
+        destroy_client_context(context);
+        return error;
+    }
+    reset_playback_state();
     if (xTaskCreatePinnedToCore(
             client_task, "spotify_client", 16384, context, 5, NULL, SPOTIFY_TASK_CORE)
         != pdPASS) {
         destroy_client_context(context);
-        vSemaphoreDelete(state_mutex);
-        vSemaphoreDelete(cooldown_mutex);
-        vQueueDelete(command_queue);
-        vQueueDelete(command_result_queue);
-        state_mutex = NULL;
-        cooldown_mutex = NULL;
-        command_queue = NULL;
-        command_result_queue = NULL;
         return ESP_ERR_NO_MEM;
     }
-    client_started = true;
+    atomic_store(&client_started, true);
     return ESP_OK;
 }
 
@@ -833,13 +850,18 @@ bool bop_spotify_get_state(playback_state_t *state)
 
 bool bop_spotify_commands_ready(void)
 {
-    return command_queue != NULL;
+    return atomic_load(&client_started);
 }
 
+/* A true read of client_started also makes the handle store above visible, so
+   the queue this sends on and the cooldown mutex are published and permanent.
+   Gating on the flag rather than on the handle keeps an accepted command one
+   that a running task will drain: a start that failed after publication leaves
+   the flag false. */
 spotify_command_submission_t bop_spotify_enqueue_command(
     spotify_command_t command, uint32_t request_id)
 {
-    if (command_queue == NULL || cooldown_mutex == NULL) {
+    if (!atomic_load(&client_started)) {
         return SPOTIFY_COMMAND_SUBMISSION_NOT_READY;
     }
     spotify_command_request_t request = {
