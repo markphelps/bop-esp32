@@ -356,13 +356,11 @@ esp_err_t bop_screenshot_start(lv_display_t *display)
     if (mirror_mutex == NULL || serial_output_mutex == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (mirror_buffer != NULL && staging_buffer != NULL) {
-        lv_display_add_event_cb(display, render_event, LV_EVENT_RENDER_START, NULL);
-        lv_display_add_event_cb(display, render_event, LV_EVENT_RENDER_READY, NULL);
-        if (lv_timer_create(refresh_timer, BOP_SCREENSHOT_REFRESH_TIMER_MS, NULL) == NULL) {
-            return ESP_ERR_NO_MEM;
-        }
-    }
+    // The serial task comes first, because every later failure here must still
+    // leave it running. A capture needs the mirror and the timer, but the host
+    // reaches this task for the status answer and for the n, b and t keys, and
+    // that path must survive an LVGL heap with no room for one timer just as it
+    // survives a PSRAM heap with no room for the mirror.
     if (xTaskCreatePinnedToCore(
             screenshot_task,
             "bop_screenshot",
@@ -373,6 +371,13 @@ esp_err_t bop_screenshot_start(lv_display_t *display)
             BOP_SCREENSHOT_TASK_CORE)
         != pdPASS) {
         return ESP_ERR_NO_MEM;
+    }
+    if (mirror_buffer != NULL && staging_buffer != NULL) {
+        lv_display_add_event_cb(display, render_event, LV_EVENT_RENDER_START, NULL);
+        lv_display_add_event_cb(display, render_event, LV_EVENT_RENDER_READY, NULL);
+        if (lv_timer_create(refresh_timer, BOP_SCREENSHOT_REFRESH_TIMER_MS, NULL) == NULL) {
+            return ESP_ERR_NO_MEM;
+        }
     }
     return ESP_OK;
 }

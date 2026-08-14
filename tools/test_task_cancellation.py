@@ -103,10 +103,43 @@ def test_backup_cleans_up_when_canceled() -> None:
         assert not partial.exists()
 
 
+def test_flash_reports_130_when_canceled() -> None:
+    """`tools/flash.py` is the process that owns Ctrl+C for `mise run flash`.
+
+    The task stopped running `run_idf.py` directly when the backup gate moved
+    into `flash.py`, so the handler covered above is no longer the one a user
+    interrupts. This walks the module as a script, which is the only way to
+    reach the `__main__` handler that turns Ctrl+C into exit code 130.
+    """
+    # runpy executes the file under the name __main__, which is the only way to
+    # reach that block. The backup is replaced by the interrupt itself, so no
+    # board is touched and idf.py is never reached.
+    source = (
+        "import runpy, sys\n"
+        "from unittest.mock import Mock, patch\n"
+        "import backup_flash, run_idf\n"
+        "sys.argv = ['flash.py']\n"
+        "with (\n"
+        "    patch.object(backup_flash, 'main', side_effect=KeyboardInterrupt),\n"
+        "    patch.object(run_idf, 'main', Mock(side_effect=AssertionError('reached idf.py'))),\n"
+        "):\n"
+        "    runpy.run_path('flash.py', run_name='__main__')\n"
+    )
+    process = subprocess.run(
+        [sys.executable, "-c", source],
+        cwd=ROOT / "tools",
+        capture_output=True,
+        text=True,
+    )
+    assert process.returncode == 130, process.stderr
+    assert "Canceled." in process.stderr
+
+
 def main() -> int:
     test_monitor_tasks_use_ctrl_c()
     test_run_idf_cancels_child()
     test_backup_cleans_up_when_canceled()
+    test_flash_reports_130_when_canceled()
     print("Host Ctrl+C checks passed.")
     return 0
 

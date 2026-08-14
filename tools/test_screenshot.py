@@ -9,6 +9,7 @@ from __future__ import annotations
 from contextlib import redirect_stderr
 from io import BufferedWriter, StringIO
 from pathlib import Path
+import re
 import struct
 import tempfile
 from typing import Any, cast
@@ -170,10 +171,34 @@ def firmware_function(name: str, following: str) -> str:
     return source[start : source.index(following, start)]
 
 
+def without_comments(source: str) -> str:
+    """Drop comments and blank lines so an assertion pins code, not prose.
+
+    Several checks below count a keyword or look for a global name. A comment
+    that happens to use the word turns such a check red on correct code, and
+    the message says nothing useful. Stripping first means the assertions
+    describe the code alone, and a comment can be written freely.
+    """
+    without_blocks = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
+    lines = []
+    for line in without_blocks.split("\n"):
+        code = line.split("//")[0].rstrip()
+        if code:
+            lines.append(code)
+    return "\n".join(lines) + "\n"
+
+
 def test_firmware_uses_bounded_serial_writes() -> None:
     source = firmware_source()
     assert "#define BOP_SCREENSHOT_SERIAL_WRITE_SIZE 1024U" in source
-    assert "#define BOP_SCREENSHOT_SERIAL_BUDGET_MS" in source
+    # The value, not just the name. A budget of an hour satisfies every other
+    # assertion here and restores the stall the budget exists to bound: every
+    # task that writes a log line waits on the serial output mutex behind it.
+    # The floor keeps a healthy transfer from failing, and the ceiling keeps the
+    # worst case inside what the 30-second host deadline can absorb.
+    budget = re.search(r"#define BOP_SCREENSHOT_SERIAL_BUDGET_MS (\d+)U", source)
+    assert budget is not None
+    assert 1000 <= int(budget.group(1)) <= 10000
     writer = firmware_function("static bool write_serial_bytes", "static bool send_response")
     assert "write_size" in writer
     # Each chunk waits for what is left of the response budget, never forever.
@@ -290,49 +315,59 @@ def test_missing_mirror_buffers_fail_initialization_but_keep_the_serial_task() -
     initialization = firmware_function(
         "esp_err_t bop_screenshot_init", "esp_err_t bop_screenshot_start"
     )
-    allocation = initialization[initialization.index("heap_caps_malloc") :]
+    allocation = without_comments(initialization[initialization.index("heap_caps_malloc") :])
     assert "return ESP_ERR_NO_MEM;" in allocation
     assert allocation.count("return ESP_OK;") == 1
     assert allocation.index("return ESP_ERR_NO_MEM;") < allocation.index("return ESP_OK;")
     # The globals take the pointers only after both allocations succeed, so the
     # failure path never frees a buffer the LVGL task can still reach through a
     # global. bop_screenshot_mirror_area tests mirror_buffer outside the mutex.
+    #
+    # Matched whole rather than counted. A count of the frees passes when one
+    # pointer is freed twice, and a search for the buffer names passes when the
+    # block clears a mutex handle instead: that leak makes bop_screenshot_start
+    # return ESP_ERR_INVALID_STATE, which takes the serial task away from the
+    # board this check exists to protect. Only the two frees and the return
+    # belong here.
     failure = allocation[: allocation.index("return ESP_ERR_NO_MEM;")]
-    assert "mirror_buffer" not in failure
-    assert "staging_buffer" not in failure
-    assert failure.count("heap_caps_free(") == 2
+    assert failure.endswith(
+        "    if (mirror == NULL || staging == NULL) {\n"
+        "        heap_caps_free(mirror);\n"
+        "        heap_caps_free(staging);\n"
+        "        "
+    )
     published = allocation[allocation.index("return ESP_ERR_NO_MEM;") :]
     assert published.index("mirror_buffer = ") < published.index("return ESP_OK;")
     assert published.index("staging_buffer = ") < published.index("return ESP_OK;")
 
-    start = firmware_function("esp_err_t bop_screenshot_start", "void bop_screenshot_mirror_area")
-    # The mutexes are the one state the task cannot run without: every response
-    # path takes them. The buffers are not, so the task creation sits outside
-    # the buffer condition. The refusal has to belong to the mutex guard, not
-    # to some other guard that happens to return the same code.
-    assert (
+    start = without_comments(
+        firmware_function("esp_err_t bop_screenshot_start", "void bop_screenshot_mirror_area")
+    )
+    # Everything ahead of the task creation, matched whole. Counting returns
+    # here missed two ways to reintroduce the regression: a guard inserted at
+    # the head of the function sat outside a span that began at the null-display
+    # check, and an exit that is not a return — ESP_ERROR_CHECK(error) — passed
+    # a check that only forbade the word. The task creation must be reachable
+    # whenever the serial path came up, so only these two guards may precede it.
+    prologue = start[: start.index("    if (xTaskCreatePinnedToCore(")]
+    assert prologue == (
+        "esp_err_t bop_screenshot_start(lv_display_t *display)\n"
+        "{\n"
+        "    if (display == NULL) {\n"
+        "        return ESP_ERR_INVALID_ARG;\n"
+        "    }\n"
         "    if (mirror_mutex == NULL || serial_output_mutex == NULL) {\n"
         "        return ESP_ERR_INVALID_STATE;\n"
         "    }\n"
-    ) in start
-    assert start.count("return ESP_ERR_INVALID_STATE;") == 1
-    assert start.index("return ESP_ERR_INVALID_STATE;") < start.index("if (mirror_buffer != NULL")
-    assert "    }\n    if (xTaskCreatePinnedToCore(" in start
-    # Nesting is not the whole requirement. An early return added anywhere ahead
-    # of the task creation leaves the creation unnested and still takes status 2
-    # and the n, b, and t keys away from a board that ran out of PSRAM. So the
-    # span runs from the head of the function, not from the mutex guard: a
-    # refusal added above that guard reintroduces the same regression. Exactly
-    # three returns belong in the span — the null-display guard, the mutex
-    # guard, and the refresh timer failure inside the buffer block.
-    before_task = start[
-        start.index("if (display == NULL)") : start.index("if (xTaskCreatePinnedToCore(")
-    ]
-    assert before_task.count("return ") == 3
-    assert before_task.count("return ESP_ERR_INVALID_ARG;") == 1
-    assert before_task.count("return ESP_ERR_NO_MEM;") == 1
+    )
+    # The task comes before the buffer block, not after it. When the mirror
+    # allocates and the LVGL heap has no room for the refresh timer, that
+    # failure must not take the serial task with it: status 2 and the n, b, and
+    # t keys work without a timer, exactly as they work without a mirror.
+    assert start.index("xTaskCreatePinnedToCore(") < start.index("if (mirror_buffer != NULL")
+    assert start.index("lv_timer_create(") > start.index("xTaskCreatePinnedToCore(")
 
-    source = (ROOT / "firmware/main/app_main.c").read_text(encoding="utf-8")
+    source = without_comments((ROOT / "firmware/main/app_main.c").read_text(encoding="utf-8"))
     main = source[source.index("void app_main(void)") :]
     # Anchored on the call, because the guard text repeats after the start call:
     # an index on the guard alone still passes when this report is deleted.
@@ -340,21 +375,25 @@ def test_missing_mirror_buffers_fail_initialization_but_keep_the_serial_task() -
     assert call in main
     after_call = main[main.index(call) + len(call) :]
     report = after_call[: after_call.index("\n    }")]
-    assert report.lstrip().startswith("if (screenshot_error != ESP_OK) {")
-    assert report.count("ESP_LOG") == 1
-    assert report.count("esp_err_to_name(screenshot_error)") == 1
-    # The block reports and does nothing else, and no later refusal stands
-    # between it and the start call either. Both take status 2 and the n, b,
-    # and t keys away from the board that ran out of PSRAM. Exactly one return
-    # belongs in that span, the LVGL lock guard, and it fails the display for
-    # every caller rather than for the screenshot alone.
-    assert "return" not in report
+    # Matched whole. The block reports and does nothing else: any statement
+    # added beside the log line acts on a failure that must not stop the board.
+    assert report == (
+        "\n    if (screenshot_error != ESP_OK) {\n"
+        '        ESP_LOGW(TAG, "Screenshot initialization failed: %s", '
+        "esp_err_to_name(screenshot_error));"
+    )
     # The start is a whole statement, so the text below is the whole call. A
     # ternary that withholds the call on screenshot_error passes the "if ("
     # count further down, because it adds no "if (" of its own.
     start_call = "screenshot_error = bop_screenshot_start(display);"
     assert start_call in after_call
-    before_start = after_call[: after_call.index(start_call)]
+    before_start = after_call[after_call.index("\n    }") : after_call.index(start_call)]
+    # Nothing between the report and the start may read the initialization
+    # result. Forbidding only the word "return" let two wrong versions through:
+    # an early return, and ESP_ERROR_CHECK(screenshot_error), which aborts a
+    # board whose only fault is that it has no PSRAM for the mirror. Naming the
+    # variable is what every such version has in common.
+    assert "screenshot_error" not in before_start
     assert before_start.count("return") == 1
     assert "if (!bsp_display_lock(0)) {" in before_start
     # No condition on the initialization result stands in front of the start.
@@ -402,6 +441,51 @@ def test_no_initialization_failure_leaks_a_mutex() -> None:
     )
     driver_failure = initialization[initialization.index("usb_serial_jtag_driver_install") :]
     assert "delete_mutexes();" in driver_failure[: driver_failure.index("return error;")]
+
+
+def test_no_serial_command_can_reach_a_deleted_spotify_queue() -> None:
+    """A published Spotify handle lives for the life of the firmware.
+
+    The serial task sends on the command queue from core 0 while the startup
+    task may still be inside bop_spotify_start. The screenshot keys n, b, and t
+    take that path. If a start that fails after publication deleted the handles,
+    the NULL check in the sender would already have passed and the send would
+    land on freed memory.
+
+    Nothing else pins this. The check lives here because the screenshot serial
+    task is the caller that made it reachable.
+    """
+    source = without_comments(
+        (ROOT / "firmware/main/spotify/spotify.c").read_text(encoding="utf-8")
+    )
+    publish = source[
+        source.index("static esp_err_t publish_shared_handles") : source.index(
+            "static void reset_playback_state"
+        )
+    ]
+    # Every delete in the file belongs to the failure path of this one function,
+    # where the handles are still locals that no other task can name. A delete
+    # anywhere else is a delete of something another task may already hold.
+    assert source.count("vSemaphoreDelete(") == publish.count("vSemaphoreDelete(")
+    assert source.count("vQueueDelete(") == publish.count("vQueueDelete(")
+    # The locals publish only once every one of them exists, so a partial set is
+    # never visible. command_queue is stored last and is the idempotency guard.
+    for handle in ("mutex", "cooldown", "commands", "results"):
+        assert f"({handle} == NULL" in publish or f"|| {handle} == NULL" in publish
+    assert publish.index("state_mutex = mutex;") < publish.index("command_queue = commands;")
+    assert publish.index("cooldown_mutex = cooldown;") < publish.index("command_queue = commands;")
+    assert publish.index("command_result_queue = results;") < publish.index(
+        "command_queue = commands;"
+    )
+    # The sender gates on the started flag, not on a handle. A start that failed
+    # after publication leaves the handles live and the flag false, so a command
+    # is accepted only when a task is running to drain it.
+    sender = source[source.index("spotify_command_submission_t bop_spotify_enqueue_command") :]
+    guard = sender[: sender.index("spotify_command_request_t request")]
+    assert "atomic_load(&client_started)" in guard
+    assert "command_queue == NULL" not in guard
+    ready = source[source.index("bool bop_spotify_commands_ready") :]
+    assert "atomic_load(&client_started)" in ready[: ready.index("}")]
 
 
 def test_a_capture_wait_drains_the_notification_a_late_render_left() -> None:
@@ -773,6 +857,7 @@ def main() -> int:
     test_a_second_initialization_never_deletes_the_mutex_the_log_hook_uses()
     test_missing_mirror_buffers_fail_initialization_but_keep_the_serial_task()
     test_no_initialization_failure_leaks_a_mutex()
+    test_no_serial_command_can_reach_a_deleted_spotify_queue()
     test_a_capture_wait_drains_the_notification_a_late_render_left()
     test_screenshot_refresh_runs_in_the_lvgl_task()
     test_refresh_timer_is_created_before_the_main_task_unlocks_lvgl()

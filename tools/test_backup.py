@@ -726,11 +726,32 @@ def test_no_override_permits_a_provisioned_backup_or_restore() -> None:
         "A second prompt is how an override would arrive."
     )
 
+    # `flash.py` is the fourth module and its own rule. It may read argv and
+    # define `--force`, because skipping a backup is what that flag does. What
+    # it may not do is reach past `backup_flash.main` into the machinery the
+    # refusal guards: a later flag that called `read_full_flash` or
+    # `probe_device_credentials` from here would copy a provisioned board's
+    # credentials to this computer with no check going red.
+    permitted = {"backup_flash": {"main"}, "device": {"project_root"}, "run_idf": {"main"}}
+    tree = ast.parse((root / "tools" / "flash.py").read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            allowed = permitted.get(node.value.id)
+            if allowed is not None:
+                assert node.attr in allowed, f"flash.py reaches {node.value.id}.{node.attr}"
+        if isinstance(node, ast.ImportFrom) and node.module in permitted:
+            for alias in node.names:
+                assert alias.name in permitted[node.module], (
+                    f"flash.py imports {node.module}.{alias.name}"
+                )
 
-def run_flash_main(arguments: list[str], backup_code: int = 0) -> tuple[int, Mock, Mock, str]:
+
+def run_flash_main(
+    arguments: list[str], backup_code: int = 0, idf_code: int = 0
+) -> tuple[int, Mock, Mock, str]:
     """Run the flash entry point with the backup step and idf.py replaced."""
     backup = Mock(return_value=backup_code)
-    idf = Mock(return_value=0)
+    idf = Mock(return_value=idf_code)
     errors = StringIO()
     with (
         patch.object(flash.backup_flash, "main", backup),
@@ -749,6 +770,20 @@ def test_unforced_flash_takes_the_backup_first() -> None:
     backup.assert_called_once_with()
     idf.assert_called_once_with(["flash"])
     assert errors == ""
+
+
+def test_a_failed_flash_reports_the_code_idf_returned() -> None:
+    """The exit code of `idf.py` is the exit code of the task.
+
+    Replacing the final `return run_idf.main(arguments)` with a bare call and
+    `return 0` was the one mutation of nine that survived the whole suite: every
+    other check asserted that idf.py was called, none that its answer was kept.
+    A flash that failed would then report success to mise and to CI.
+    """
+    for code in (1, 2, 130):
+        result, _, idf, _ = run_flash_main(["--force"], idf_code=code)
+        assert result == code
+        idf.assert_called_once_with(["flash"])
 
 
 def test_a_refused_backup_still_stops_the_flash() -> None:
@@ -823,10 +858,10 @@ def test_a_forced_flash_never_enters_the_backup_tool() -> None:
     """`--force` skips taking a backup. It must not reach the port, the probe, or a read."""
     idf = Mock(return_value=0)
     with tempfile.TemporaryDirectory() as name:
+        root = Path(name)
         with (
             patch.multiple(
                 backup_flash,
-                project_root=Mock(return_value=Path(name)),
                 esptool_path=Mock(side_effect=AssertionError("a forced flash called esptool")),
                 detect_usb_port=Mock(side_effect=AssertionError("a forced flash opened the port")),
                 probe_device_credentials=Mock(
@@ -834,27 +869,56 @@ def test_a_forced_flash_never_enters_the_backup_tool() -> None:
                 ),
                 read_full_flash=Mock(side_effect=AssertionError("a forced flash read the flash")),
             ),
+            # `flash.py` imports `project_root` from `device`, so patching the
+            # name on `backup_flash` left the warning pointing at the real
+            # repository and the assertion below reading the real backups
+            # directory.
+            patch.object(flash, "project_root", Mock(return_value=root)),
             patch.object(flash.run_idf, "main", idf),
             patch.object(sys, "argv", ["flash.py", "--force"]),
             redirect_stdout(StringIO()),
             redirect_stderr(StringIO()),
         ):
             assert flash.main() == 0
+        assert not (root / "backups").exists()
     idf.assert_called_once_with(["flash"])
 
 
 def test_no_flag_makes_a_provisioned_device_produce_a_backup() -> None:
-    """The refusal is absolute. `--force` skips a backup; it never permits one."""
-    for arguments in ([], ["--force"], ["--yes"], ["-B", "build-perf", "--force"]):
+    """The refusal is absolute. `--force` skips a backup; it never permits one.
+
+    Driven through `flash.main`, the entry point a user actually reaches. An
+    earlier version of this check looped over four argument lists while patching
+    `sys.argv` for `backup_flash`, which reads no argv and was called directly:
+    the four runs were one run repeated, and the path from the command line to
+    the refusal was never walked.
+    """
+    for arguments in ([], ["--yes"], ["--build-dir", "build-perf"]):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)
-            with patch.object(sys, "argv", ["backup_flash.py", *arguments]):
-                result, actions, errors = run_backup_main(
-                    root, probe_device_credentials=Mock(return_value=["refresh_tok", "wifi_pass"])
-                )
+            idf = Mock(return_value=0)
+            errors = StringIO()
+            actions = {
+                "project_root": Mock(return_value=root),
+                "esptool_path": Mock(return_value="esptool"),
+                "detect_usb_port": Mock(return_value="/dev/null"),
+                "probe_device_credentials": Mock(return_value=["refresh_tok", "wifi_pass"]),
+                "read_full_flash": Mock(),
+            }
+            with (
+                patch.multiple(backup_flash, **actions),
+                patch.object(flash.run_idf, "main", idf),
+                patch.object(sys, "argv", ["flash.py", *arguments]),
+                redirect_stdout(StringIO()),
+                redirect_stderr(errors),
+            ):
+                result = flash.main()
+            # The refusal text and the exit code both reach the caller, and the
+            # flash never runs.
             assert result == 1, arguments
             actions["read_full_flash"].assert_not_called()
-            assert "holds Bop credentials" in errors
+            assert "holds Bop credentials" in errors.getvalue(), arguments
+            idf.assert_not_called()
             assert not (root / "backups").exists()
 
 
@@ -916,6 +980,7 @@ def main() -> int:
     test_interrupt_at_the_prompt_says_nothing_was_changed()
     test_no_override_permits_a_provisioned_backup_or_restore()
     test_unforced_flash_takes_the_backup_first()
+    test_a_failed_flash_reports_the_code_idf_returned()
     test_a_refused_backup_still_stops_the_flash()
     test_forced_flash_skips_the_backup_and_warns()
     test_the_flag_does_not_reach_idf_and_the_perf_arguments_do()
