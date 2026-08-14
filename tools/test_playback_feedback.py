@@ -47,7 +47,7 @@ def assert_rate_limit_policy(source: str) -> None:
     assert client.index("            command_pending = false;") < client.index("if (rate_limited)")
 
     assert source.count("if (status_code == 429)") == 3
-    assert "Token refresh rate limit" in source
+    assert '*rate_limited = true;\n        ESP_LOGW(TAG, "Token refresh rate limit")' in source
     assert (
         'if (status_code == 429) {\n        ESP_LOGW(TAG, "Spotify rate limit");\n        return ESP_ERR_TIMEOUT;\n    }\n    if (status_code == 204)'
         in source
@@ -62,6 +62,7 @@ def assert_rate_limit_policy(source: str) -> None:
     assert "start_rate_limit_cooldown(retry_after_seconds);" in client
     assert "submission = SPOTIFY_COMMAND_SUBMISSION_RATE_LIMITED;" in source
     assert "if (rate_limit_deadline_us - esp_timer_get_time() <= 0)" in source
+    assert "if (error != ESP_OK || *status_code != 401)" in source
     assert "publish_command_result(&pending_command, false, true, was_playing);" in client
 
 
@@ -84,7 +85,10 @@ def test_rate_limit_policy_rejects_regressions() -> None:
         "poll_current_playback(context, &retry_after_seconds, &rate_limited);",
         "/* accepted-command playback refresh removed */",
     )
-    assert_rejected("Token refresh rate limit", "Token refresh removed")
+    assert_rejected(
+        '*rate_limited = true;\n        ESP_LOGW(TAG, "Token refresh rate limit")',
+        '*rate_limited = false;\n        ESP_LOGW(TAG, "Token refresh rate limit")',
+    )
     assert_rejected(
         'if (status_code == 429) {\n        ESP_LOGW(TAG, "Spotify rate limit");\n        return ESP_ERR_TIMEOUT;\n    }\n    if (status_code == 204)',
         'if (status_code == 430) {\n        ESP_LOGW(TAG, "Spotify rate limit");\n        return ESP_ERR_TIMEOUT;\n    }\n    if (status_code == 204)',
@@ -102,7 +106,14 @@ def test_rate_limit_policy_rejects_regressions() -> None:
         "retry_after_seconds > 0 ? retry_after_seconds : 1",
     )
     assert_rejected("seconds <= INT64_MAX / 1000000", "seconds <= 3600")
+    assert_rejected(
+        "submission = SPOTIFY_COMMAND_SUBMISSION_RATE_LIMITED;",
+        "submission = SPOTIFY_COMMAND_SUBMISSION_QUEUED;",
+    )
     assert_rejected("if (rate_limit_deadline_us - esp_timer_get_time() <= 0)", "if (true)")
+    assert_rejected(
+        "if (error != ESP_OK || *status_code != 401)", "if (error != ESP_OK || *status_code != 429)"
+    )
     assert_rejected(
         "command_pending = false;\n            if (rate_limited)",
         "if (rate_limited)",
