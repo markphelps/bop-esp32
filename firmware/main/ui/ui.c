@@ -391,7 +391,8 @@ static void animate_swipe(int direction)
 
 static bool send_gesture_command(spotify_command_t command, uint32_t request_id)
 {
-    if (bop_spotify_enqueue_command(command, request_id)) {
+    if (bop_spotify_enqueue_command(command, request_id)
+        == SPOTIFY_COMMAND_SUBMISSION_QUEUED) {
         return true;
     }
     ESP_LOGW(TAG, "Spotify command queue is full");

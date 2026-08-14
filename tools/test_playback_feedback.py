@@ -45,7 +45,7 @@ def test_feedback_requires_an_accepted_tap_request() -> None:
     assert "send_gesture_command(SPOTIFY_COMMAND_PREVIOUS, 0)" in UI_SOURCE
     assert "send_gesture_command(SPOTIFY_COMMAND_NEXT, 0)" in UI_SOURCE
     assert (
-        "publish_command_result(&pending_command, command_error == ESP_OK, was_playing);"
+        "publish_command_result(&pending_command, command_error == ESP_OK, false, was_playing);"
         in SPOTIFY_SOURCE
     )
 
