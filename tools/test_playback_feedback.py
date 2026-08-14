@@ -129,9 +129,10 @@ def test_feedback_requires_an_accepted_tap_request() -> None:
 
     assert "send_gesture_command(SPOTIFY_COMMAND_TOGGLE, request_id)" in tap
     assert "show_feedback(" not in tap
-    assert "if (result.command == SPOTIFY_COMMAND_TOGGLE" in results
-    assert "&& result.request_id != 0" in results
-    assert "&& result.accepted)" in results
+    assert "if (result.command != SPOTIFY_COMMAND_TOGGLE || result.request_id == 0)" in results
+    assert "if (result.accepted)" in results
+    assert "else if (result.rate_limited)" in results
+    assert "show_feedback(LV_SYMBOL_WARNING);" in results
     assert "send_gesture_command(SPOTIFY_COMMAND_PREVIOUS, 0)" in UI_SOURCE
     assert "send_gesture_command(SPOTIFY_COMMAND_NEXT, 0)" in UI_SOURCE
     assert (
