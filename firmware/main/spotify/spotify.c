@@ -4,6 +4,7 @@
 #include "spotify.h"
 
 #include <ctype.h>
+#include <errno.h>
 #include <limits.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -27,7 +28,10 @@
 #define TOKEN_RESPONSE_CAPACITY 8192
 #define PLAYBACK_RESPONSE_CAPACITY 32768
 #define COMMAND_QUEUE_LENGTH 8
-#define POLL_INTERVAL_MS 2000
+#define PLAYING_POLL_INTERVAL_MS 10000
+#define IDLE_POLL_INTERVAL_MS 60000
+#define RATE_LIMIT_FALLBACK_SECONDS 60
+#define RATE_LIMIT_WAIT_SLICE_MS 60000
 #define TOKEN_REFRESH_MARGIN_SECONDS 60
 #define SPOTIFY_TASK_CORE 0
 
@@ -37,7 +41,7 @@ typedef struct {
     char *data;
     size_t length;
     size_t capacity;
-    int retry_after_seconds;
+    int64_t retry_after_seconds;
     bool overflow;
 } response_buffer_t;
 
@@ -55,11 +59,28 @@ typedef struct {
 } spotify_command_request_t;
 
 static SemaphoreHandle_t state_mutex;
+static SemaphoreHandle_t cooldown_mutex;
 static QueueHandle_t command_queue;
 static QueueHandle_t command_result_queue;
 static playback_state_t current_state;
+static int64_t rate_limit_deadline_us;
 static bool state_ready;
 static atomic_bool client_started;
+
+static bool is_positive_decimal(const char *value)
+{
+    if (value == NULL || *value == '\0') {
+        return false;
+    }
+    for (const unsigned char *character = (const unsigned char *)value;
+         *character != '\0';
+         ++character) {
+        if (!isdigit(*character)) {
+            return false;
+        }
+    }
+    return true;
+}
 
 static esp_err_t collect_response(esp_http_client_event_t *event)
 {
@@ -69,9 +90,13 @@ static esp_err_t collect_response(esp_http_client_event_t *event)
         && event->header_value != NULL
         && strcasecmp(event->header_key, "Retry-After") == 0) {
         char *end = NULL;
-        long seconds = strtol(event->header_value, &end, 10);
-        if (end != event->header_value && seconds > 0 && seconds <= 3600) {
-            response->retry_after_seconds = (int)seconds;
+        errno = 0;
+        long long seconds = strtoll(event->header_value, &end, 10);
+        if (is_positive_decimal(event->header_value)
+            && errno != ERANGE
+            && seconds > 0
+            && seconds <= INT64_MAX / 1000000) {
+            response->retry_after_seconds = seconds;
         }
         return ESP_OK;
     }
@@ -162,9 +187,11 @@ static esp_err_t perform_request(
     return error;
 }
 
-static esp_err_t refresh_access_token(client_context_t *context, int *retry_after_seconds)
+static esp_err_t refresh_access_token(
+    client_context_t *context, int64_t *retry_after_seconds, bool *rate_limited)
 {
     *retry_after_seconds = 0;
+    *rate_limited = false;
     char *encoded_refresh_token = form_encode(context->credentials->refresh_token);
     char *encoded_client_id = form_encode(context->credentials->client_id);
     char *response_data = malloc(TOKEN_RESPONSE_CAPACITY);
@@ -224,10 +251,8 @@ static esp_err_t refresh_access_token(client_context_t *context, int *retry_afte
     secure_free(payload, payload_capacity);
     *retry_after_seconds = response.retry_after_seconds;
     if (status_code == 429) {
-        if (*retry_after_seconds <= 0) {
-            *retry_after_seconds = 1;
-        }
-        ESP_LOGW(TAG, "Token refresh rate limit; waiting %d seconds", *retry_after_seconds);
+        *rate_limited = true;
+        ESP_LOGW(TAG, "Token refresh rate limit");
         secure_free(response_data, TOKEN_RESPONSE_CAPACITY);
         return ESP_ERR_TIMEOUT;
     }
@@ -281,14 +306,18 @@ static esp_err_t refresh_access_token(client_context_t *context, int *retry_afte
 }
 
 static esp_err_t ensure_access_token(
-    client_context_t *context, bool force_refresh, int *retry_after_seconds)
+    client_context_t *context,
+    bool force_refresh,
+    int64_t *retry_after_seconds,
+    bool *rate_limited)
 {
     int64_t now = esp_timer_get_time() / 1000000;
     bool expiring = context->access_token_expires_at - now <= TOKEN_REFRESH_MARGIN_SECONDS;
     if (force_refresh || context->access_token[0] == '\0' || expiring) {
-        return refresh_access_token(context, retry_after_seconds);
+        return refresh_access_token(context, retry_after_seconds, rate_limited);
     }
     *retry_after_seconds = 0;
+    *rate_limited = false;
     return ESP_OK;
 }
 
@@ -311,11 +340,14 @@ static esp_err_t api_request(
     const char *url,
     esp_http_client_method_t method,
     int *status_code,
-    int *retry_after_seconds)
+    int64_t *retry_after_seconds,
+    bool *rate_limited)
 {
     *retry_after_seconds = 0;
+    *rate_limited = false;
     for (int attempt = 0; attempt < 2; ++attempt) {
-        esp_err_t error = ensure_access_token(context, attempt > 0, retry_after_seconds);
+        esp_err_t error = ensure_access_token(
+            context, attempt > 0, retry_after_seconds, rate_limited);
         if (error != ESP_OK) {
             return error;
         }
@@ -330,6 +362,7 @@ static esp_err_t api_request(
             error = perform_request(context->api_client, &context->response, status_code);
         }
         *retry_after_seconds = context->response.retry_after_seconds;
+        *rate_limited = *status_code == 429;
         if (error != ESP_OK || *status_code != 401) {
             return error;
         }
@@ -467,7 +500,8 @@ static esp_err_t parse_playback(const char *json, playback_state_t *state)
     return ESP_OK;
 }
 
-static esp_err_t poll_current_playback(client_context_t *context, int *backoff_seconds)
+static esp_err_t poll_current_playback(
+    client_context_t *context, int64_t *retry_after_seconds, bool *rate_limited)
 {
     int status_code = 0;
     esp_err_t error = api_request(
@@ -475,17 +509,15 @@ static esp_err_t poll_current_playback(client_context_t *context, int *backoff_s
         "https://api.spotify.com/v1/me/player/currently-playing",
         HTTP_METHOD_GET,
         &status_code,
-        backoff_seconds);
+        retry_after_seconds,
+        rate_limited);
     if (error != ESP_OK) {
         ESP_LOGE(TAG, "Playback poll failed: %s", esp_err_to_name(error));
         return error;
     }
     if (status_code == 429) {
-        if (*backoff_seconds <= 0) {
-            *backoff_seconds = 1;
-        }
-        ESP_LOGW(TAG, "Spotify rate limit; waiting %d seconds", *backoff_seconds);
-        return ESP_OK;
+        ESP_LOGW(TAG, "Spotify rate limit");
+        return ESP_ERR_TIMEOUT;
     }
     if (status_code == 204) {
         playback_state_t empty = {0};
@@ -521,7 +553,8 @@ static const char *command_name(spotify_command_t command, bool is_playing)
 static esp_err_t send_command(
     client_context_t *context,
     spotify_command_t command,
-    int *backoff_seconds,
+    int64_t *retry_after_seconds,
+    bool *rate_limited,
     bool *was_playing)
 {
     playback_state_t state = {0};
@@ -545,17 +578,14 @@ static esp_err_t send_command(
     ESP_LOGI(TAG, "Sending %s command", name);
     int status_code = 0;
     esp_err_t error = api_request(
-        context, url, method, &status_code, backoff_seconds);
+        context, url, method, &status_code, retry_after_seconds, rate_limited);
     if (error != ESP_OK) {
         ESP_LOGE(TAG, "%s command failed: %s", name, esp_err_to_name(error));
         return error;
     }
     if (status_code == 429) {
-        if (*backoff_seconds <= 0) {
-            *backoff_seconds = 1;
-        }
-        ESP_LOGW(TAG, "Spotify rate limit; waiting %d seconds", *backoff_seconds);
-        return ESP_OK;
+        ESP_LOGW(TAG, "Spotify rate limit");
+        return ESP_ERR_TIMEOUT;
     }
     if (status_code < 200 || status_code >= 300) {
         ESP_LOGE(TAG, "%s command failed (HTTP %d)", name, status_code);
@@ -566,7 +596,7 @@ static esp_err_t send_command(
 }
 
 static void publish_command_result(
-    const spotify_command_request_t *request, bool accepted, bool was_playing)
+    const spotify_command_request_t *request, bool accepted, bool rate_limited, bool was_playing)
 {
     if (request->request_id == 0) {
         return;
@@ -575,6 +605,7 @@ static void publish_command_result(
         .command = request->command,
         .request_id = request->request_id,
         .accepted = accepted,
+        .rate_limited = rate_limited,
         .was_playing = was_playing,
     };
     if (xQueueSend(command_result_queue, &result, 0) != pdTRUE) {
@@ -588,9 +619,40 @@ static TickType_t ticks_until(TickType_t deadline)
     return (int32_t)(deadline - now) > 0 ? deadline - now : 0;
 }
 
-static TickType_t delay_from_seconds(int seconds)
+static void start_rate_limit_cooldown(int64_t retry_after_seconds)
 {
-    return pdMS_TO_TICKS((uint32_t)seconds * 1000);
+    int64_t seconds = retry_after_seconds > 0 ? retry_after_seconds : RATE_LIMIT_FALLBACK_SECONDS;
+    int64_t now = esp_timer_get_time();
+    int64_t duration = seconds * 1000000;
+    int64_t deadline = duration > INT64_MAX - now ? INT64_MAX : now + duration;
+
+    xSemaphoreTake(cooldown_mutex, portMAX_DELAY);
+    rate_limit_deadline_us = deadline;
+    xSemaphoreGive(cooldown_mutex);
+}
+
+static int64_t rate_limit_remaining_us(void)
+{
+    xSemaphoreTake(cooldown_mutex, portMAX_DELAY);
+    int64_t remaining = rate_limit_deadline_us - esp_timer_get_time();
+    xSemaphoreGive(cooldown_mutex);
+    return remaining > 0 ? remaining : 0;
+}
+
+static void wait_for_rate_limit_expiry(void)
+{
+    for (;;) {
+        int64_t remaining = rate_limit_remaining_us();
+        if (remaining == 0) {
+            return;
+        }
+        int64_t milliseconds = (remaining + 999) / 1000;
+        if (milliseconds > RATE_LIMIT_WAIT_SLICE_MS) {
+            milliseconds = RATE_LIMIT_WAIT_SLICE_MS;
+        }
+        TickType_t delay = pdMS_TO_TICKS((uint32_t)milliseconds);
+        vTaskDelay(delay > 0 ? delay : 1);
+    }
 }
 
 static client_context_t *create_client_context(bop_credentials_t *credentials)
@@ -644,18 +706,11 @@ static void client_task(void *argument)
 {
     client_context_t *context = argument;
     TickType_t poll_deadline = xTaskGetTickCount();
-    TickType_t rate_limit_deadline = 0;
     spotify_command_request_t pending_command = {0};
     bool command_pending = false;
 
     for (;;) {
-        if (rate_limit_deadline != 0) {
-            TickType_t wait = ticks_until(rate_limit_deadline);
-            if (wait > 0) {
-                vTaskDelay(wait);
-            }
-            rate_limit_deadline = 0;
-        }
+        wait_for_rate_limit_expiry();
 
         bop_wifi_wait_connected();
         if (!command_pending) {
@@ -664,31 +719,42 @@ static void client_task(void *argument)
         }
         bop_wifi_wait_connected();
 
-        int backoff_seconds = 0;
+        int64_t retry_after_seconds = 0;
+        bool rate_limited = false;
         if (command_pending) {
             bool was_playing = false;
             esp_err_t command_error = send_command(
-                context, pending_command.command, &backoff_seconds, &was_playing);
-            if (backoff_seconds > 0) {
-                rate_limit_deadline = xTaskGetTickCount() + delay_from_seconds(backoff_seconds);
-                poll_deadline = rate_limit_deadline;
+                context,
+                pending_command.command,
+                &retry_after_seconds,
+                &rate_limited,
+                &was_playing);
+            command_pending = false;
+            if (rate_limited) {
+                start_rate_limit_cooldown(retry_after_seconds);
+                publish_command_result(&pending_command, false, true, was_playing);
                 continue;
             }
-            command_pending = false;
-            publish_command_result(&pending_command, command_error == ESP_OK, was_playing);
+            publish_command_result(&pending_command, command_error == ESP_OK, false, was_playing);
             if (command_error != ESP_OK) {
-                ESP_LOGW(TAG, "Command was not applied; refreshing playback state");
+                ESP_LOGW(TAG, "Command was not applied");
+                continue;
             }
         }
 
         bop_wifi_wait_connected();
         TickType_t poll_started = xTaskGetTickCount();
-        poll_current_playback(context, &backoff_seconds);
-        poll_deadline = poll_started + pdMS_TO_TICKS(POLL_INTERVAL_MS);
-        if (backoff_seconds > 0) {
-            rate_limit_deadline = xTaskGetTickCount() + delay_from_seconds(backoff_seconds);
-            poll_deadline = rate_limit_deadline;
+        poll_current_playback(context, &retry_after_seconds, &rate_limited);
+        if (rate_limited) {
+            start_rate_limit_cooldown(retry_after_seconds);
+            continue;
         }
+        playback_state_t state = {0};
+        bop_spotify_get_state(&state);
+        TickType_t interval = state.available && state.is_playing
+            ? pdMS_TO_TICKS(PLAYING_POLL_INTERVAL_MS)
+            : pdMS_TO_TICKS(IDLE_POLL_INTERVAL_MS);
+        poll_deadline = poll_started + interval;
     }
 }
 
@@ -706,11 +772,15 @@ static esp_err_t publish_shared_handles(void)
         return ESP_OK;
     }
     SemaphoreHandle_t mutex = xSemaphoreCreateMutex();
+    SemaphoreHandle_t cooldown = xSemaphoreCreateMutex();
     QueueHandle_t commands = xQueueCreate(COMMAND_QUEUE_LENGTH, sizeof(spotify_command_request_t));
     QueueHandle_t results = xQueueCreate(COMMAND_QUEUE_LENGTH, sizeof(spotify_command_result_t));
-    if (mutex == NULL || commands == NULL || results == NULL) {
+    if (mutex == NULL || cooldown == NULL || commands == NULL || results == NULL) {
         if (mutex != NULL) {
             vSemaphoreDelete(mutex);
+        }
+        if (cooldown != NULL) {
+            vSemaphoreDelete(cooldown);
         }
         if (commands != NULL) {
             vQueueDelete(commands);
@@ -721,6 +791,7 @@ static esp_err_t publish_shared_handles(void)
         return ESP_ERR_NO_MEM;
     }
     state_mutex = mutex;
+    cooldown_mutex = cooldown;
     command_result_queue = results;
     command_queue = commands;
     return ESP_OK;
@@ -732,6 +803,12 @@ static void reset_playback_state(void)
     mbedtls_platform_zeroize(&current_state, sizeof(current_state));
     state_ready = false;
     xSemaphoreGive(state_mutex);
+    /* The cooldown deadline belongs to cooldown_mutex, not to state_mutex.
+       Nothing else holds it yet, but taking it here keeps every write to the
+       field under the one lock that owns it. */
+    xSemaphoreTake(cooldown_mutex, portMAX_DELAY);
+    rate_limit_deadline_us = 0;
+    xSemaphoreGive(cooldown_mutex);
 }
 
 esp_err_t bop_spotify_start(bop_credentials_t *credentials)
@@ -777,19 +854,29 @@ bool bop_spotify_commands_ready(void)
 }
 
 /* A true read of client_started also makes the handle store above visible, so
-   the queue this sends on is published and permanent. Gating on the flag
-   rather than on the handle keeps an accepted command one that a running task
-   will drain: a start that failed after publication leaves the flag false. */
-bool bop_spotify_enqueue_command(spotify_command_t command, uint32_t request_id)
+   the queue this sends on and the cooldown mutex are published and permanent.
+   Gating on the flag rather than on the handle keeps an accepted command one
+   that a running task will drain: a start that failed after publication leaves
+   the flag false. */
+spotify_command_submission_t bop_spotify_enqueue_command(
+    spotify_command_t command, uint32_t request_id)
 {
     if (!atomic_load(&client_started)) {
-        return false;
+        return SPOTIFY_COMMAND_SUBMISSION_NOT_READY;
     }
     spotify_command_request_t request = {
         .command = command,
         .request_id = request_id,
     };
-    return xQueueSend(command_queue, &request, 0) == pdTRUE;
+    xSemaphoreTake(cooldown_mutex, portMAX_DELAY);
+    spotify_command_submission_t submission = SPOTIFY_COMMAND_SUBMISSION_RATE_LIMITED;
+    if (rate_limit_deadline_us - esp_timer_get_time() <= 0) {
+        submission = xQueueSend(command_queue, &request, 0) == pdTRUE
+            ? SPOTIFY_COMMAND_SUBMISSION_QUEUED
+            : SPOTIFY_COMMAND_SUBMISSION_QUEUE_FULL;
+    }
+    xSemaphoreGive(cooldown_mutex);
+    return submission;
 }
 
 bool bop_spotify_get_command_result(spotify_command_result_t *result)

@@ -32,15 +32,24 @@ typedef enum {
     SPOTIFY_COMMAND_TOGGLE,
 } spotify_command_t;
 
+typedef enum {
+    SPOTIFY_COMMAND_SUBMISSION_NOT_READY,
+    SPOTIFY_COMMAND_SUBMISSION_QUEUE_FULL,
+    SPOTIFY_COMMAND_SUBMISSION_RATE_LIMITED,
+    SPOTIFY_COMMAND_SUBMISSION_QUEUED,
+} spotify_command_submission_t;
+
 typedef struct {
     spotify_command_t command;
     uint32_t request_id;
     bool accepted;
+    bool rate_limited;
     bool was_playing;
 } spotify_command_result_t;
 
 esp_err_t bop_spotify_start(bop_credentials_t *credentials);
 bool bop_spotify_get_state(playback_state_t *state);
 bool bop_spotify_commands_ready(void);
-bool bop_spotify_enqueue_command(spotify_command_t command, uint32_t request_id);
+spotify_command_submission_t bop_spotify_enqueue_command(
+    spotify_command_t command, uint32_t request_id);
 bool bop_spotify_get_command_result(spotify_command_result_t *result);
