@@ -1,0 +1,244 @@
+<!--
+SPDX-FileCopyrightText: 2026 Mark Phelps
+SPDX-License-Identifier: Apache-2.0
+-->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Bop WiFi setup</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: system-ui, sans-serif;
+        background: #080808;
+        color: #f7f7f7;
+      }
+      body {
+        margin: 0;
+        padding: 24px;
+        display: flex;
+        justify-content: center;
+      }
+      main {
+        width: min(100%, 480px);
+      }
+      h1 {
+        color: #1db954;
+        margin: 0 0 8px;
+      }
+      p {
+        line-height: 1.45;
+      }
+      .networks {
+        display: grid;
+        gap: 8px;
+        margin: 16px 0;
+      }
+      .network {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        padding: 12px;
+        border: 1px solid #444;
+        border-radius: 10px;
+      }
+      .network:has(input:checked) {
+        border-color: #1db954;
+      }
+      .network.unsupported {
+        color: #999;
+      }
+      label,
+      input,
+      button {
+        font: inherit;
+      }
+      input[type="text"],
+      input[type="password"] {
+        box-sizing: border-box;
+        width: 100%;
+        padding: 12px;
+        margin: 6px 0 14px;
+        border: 1px solid #666;
+        border-radius: 8px;
+        background: #181818;
+        color: #fff;
+      }
+      .manual {
+        margin: 16px 0;
+      }
+      button {
+        width: 100%;
+        padding: 13px;
+        border: 0;
+        border-radius: 999px;
+        background: #1db954;
+        color: #06150b;
+        font-weight: 700;
+      }
+      button:disabled {
+        opacity: 0.5;
+      }
+      .status {
+        min-height: 24px;
+        margin-top: 16px;
+      }
+      .meta {
+        margin-left: auto;
+        font-size: 0.85rem;
+        color: #aaa;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Connect Bop to WiFi</h1>
+      <p>Select a supported network. For a hidden network, use manual entry.</p>
+      <form id="setup-form">
+        <div id="networks" class="networks" aria-live="polite"></div>
+        <label class="manual"
+          ><input id="manual-network" type="checkbox" /> Enter a network name
+          manually</label
+        >
+        <label for="manual-ssid">Network name</label>
+        <input
+          id="manual-ssid"
+          name="manual-ssid"
+          type="text"
+          maxlength="32"
+          disabled
+          autocomplete="off"
+        />
+        <label class="manual"
+          ><input id="manual-open" type="checkbox" disabled /> Hidden network is
+          open</label
+        >
+        <label for="password">WiFi password</label>
+        <input
+          id="password"
+          name="password"
+          type="password"
+          maxlength="64"
+          autocomplete="current-password"
+        />
+        <button id="connect" type="submit" disabled>Connect</button>
+      </form>
+      <p id="status" class="status" role="status"></p>
+    </main>
+    <script>
+      const networks = document.getElementById("networks");
+      const form = document.getElementById("setup-form");
+      const manual = document.getElementById("manual-network");
+      const manualSsid = document.getElementById("manual-ssid");
+      const manualOpen = document.getElementById("manual-open");
+      const password = document.getElementById("password");
+      const button = document.getElementById("connect");
+      const status = document.getElementById("status");
+      function setStatus(message) {
+        status.textContent = message;
+      }
+      function addNetwork(network, index) {
+        const label = document.createElement("label");
+        label.className = "network" + (network.supported ? "" : " unsupported");
+        const input = document.createElement("input");
+        input.type = "radio";
+        input.name = "ssid";
+        input.value = network.ssid;
+        input.disabled = !network.supported;
+        input.dataset.secure = String(network.secure);
+        if (
+          network.supported &&
+          !document.querySelector("input[name=ssid]:checked")
+        )
+          input.checked = true;
+        const name = document.createElement("span");
+        name.textContent = network.ssid;
+        const meta = document.createElement("span");
+        meta.className = "meta";
+        meta.textContent = network.supported
+          ? network.secure
+            ? "Secured"
+            : "Open"
+          : "Unsupported";
+        label.append(input, name, meta);
+        networks.append(label);
+      }
+      function updateConnectButton() {
+        const selected = document.querySelector("input[name=ssid]:checked");
+        const ssid = manual.checked ? manualSsid.value.trim() : selected?.value;
+        const needsPassword = manual.checked
+          ? !manualOpen.checked
+          : selected?.dataset.secure === "true";
+        button.disabled = !ssid || (needsPassword && !password.value);
+      }
+      manual.addEventListener("change", () => {
+        manualSsid.disabled = !manual.checked;
+        manualOpen.disabled = !manual.checked;
+        for (const input of document.querySelectorAll("input[name=ssid]"))
+          input.disabled =
+            manual.checked ||
+            input.closest("label").classList.contains("unsupported");
+        if (manual.checked) manualSsid.focus();
+        updateConnectButton();
+      });
+      manualSsid.addEventListener("input", updateConnectButton);
+      manualOpen.addEventListener("change", updateConnectButton);
+      password.addEventListener("input", updateConnectButton);
+      networks.addEventListener("change", updateConnectButton);
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const selected = document.querySelector("input[name=ssid]:checked");
+        const ssid = manual.checked
+          ? manualSsid.value
+          : selected
+            ? selected.value
+            : "";
+        const needsPassword = manual.checked
+          ? !manualOpen.checked
+          : selected?.dataset.secure === "true";
+        if (!ssid) {
+          password.value = "";
+          setStatus("Enter or select a network name.");
+          updateConnectButton();
+          return;
+        }
+        if (needsPassword && !password.value) {
+          setStatus("Enter the WiFi password.");
+          updateConnectButton();
+          return;
+        }
+        button.disabled = true;
+        setStatus("Connecting…");
+        const body = new URLSearchParams({ ssid, password: password.value });
+        try {
+          const response = await fetch("/connect", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body,
+          });
+          const result = await response.json();
+          setStatus(result.ok ? "WiFi saved. Bop will restart." : result.error);
+        } catch (error) {
+          setStatus("The setup request failed. Try again.");
+        } finally {
+          password.value = "";
+          updateConnectButton();
+        }
+      });
+      fetch("/networks")
+        .then((response) => response.json())
+        .then((list) => {
+          networks.textContent = "";
+          list.forEach(addNetwork);
+          updateConnectButton();
+          if (list.length === 0)
+            setStatus("No networks found. Use manual entry.");
+        })
+        .catch(() =>
+          setStatus("Network scan results are unavailable. Use manual entry."),
+        );
+    </script>
+  </body>
+</html>

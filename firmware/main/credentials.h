@@ -3,7 +3,7 @@
 
 #pragma once
 
-#include "esp_err.h"
+#include "bop_esp_err.h"
 
 #define BOP_WIFI_SSID_CAPACITY 33
 #define BOP_WIFI_PASSWORD_CAPACITY 65
@@ -17,6 +17,18 @@ typedef struct {
     char refresh_token[BOP_REFRESH_TOKEN_CAPACITY];
 } bop_credentials_t;
 
+typedef enum {
+    BOP_PROVISION_NONE,
+    BOP_PROVISION_WIFI_ONLY,
+    BOP_PROVISION_COMPLETE,
+} bop_provision_state_t;
+
 esp_err_t bop_credentials_init(void);
 esp_err_t bop_credentials_load(bop_credentials_t *credentials);
+esp_err_t bop_credentials_state(
+    const bop_credentials_t *credentials, bop_provision_state_t *state);
+esp_err_t bop_credentials_store_wifi(const char *ssid, const char *password);
+esp_err_t bop_credentials_store_spotify(
+    const char *client_id, const char *refresh_token);
 esp_err_t bop_credentials_store_refresh_token(const char *refresh_token);
+esp_err_t bop_credentials_load_state(bop_provision_state_t *state);

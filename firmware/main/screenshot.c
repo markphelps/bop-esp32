@@ -11,6 +11,7 @@
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
 #include "esp_crc.h"
+#include "esp_system.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -41,8 +42,13 @@
 #define BOP_SCREENSHOT_SERIAL_BUDGET_MS 5000U
 #define BOP_SCREENSHOT_REFRESH_TIMER_MS 10U
 #define BOP_SCREENSHOT_REFRESH_TIMEOUT_MS 1000U
-#define BOP_SCREENSHOT_TASK_STACK_SIZE 4096U
+// The USB credential handler keeps a maximum-size frame and two credential
+// buffers while it calls the NVS reader. Its stack must hold that bounded
+// request and the loaded credential snapshot at the same time.
+#define BOP_SCREENSHOT_TASK_STACK_SIZE 8192U
 #define BOP_SCREENSHOT_TASK_CORE 0
+
+extern void mbedtls_platform_zeroize(void *buffer, size_t length);
 
 static const char *TAG = "screenshot";
 static uint8_t *mirror_buffer;
@@ -225,6 +231,213 @@ static void handle_spotify_command(uint8_t input)
     }
 }
 
+static bool read_serial_bytes(uint8_t *destination, size_t size)
+{
+    const TickType_t start = xTaskGetTickCount();
+    size_t offset = 0;
+    while (offset < size) {
+        TickType_t wait = remaining_budget(start);
+        if (wait == 0) {
+            return false;
+        }
+        int received = usb_serial_jtag_read_bytes(destination + offset, size - offset, wait);
+        if (received <= 0) {
+            return false;
+        }
+        offset += (size_t)received;
+    }
+    return true;
+}
+
+static uint16_t read_uint16_le(const uint8_t *source)
+{
+    return (uint16_t)source[0] | ((uint16_t)source[1] << 8);
+}
+
+static uint32_t read_uint32_le(const uint8_t *source)
+{
+    return (uint32_t)source[0] | ((uint32_t)source[1] << 8) | ((uint32_t)source[2] << 16)
+        | ((uint32_t)source[3] << 24);
+}
+
+static void make_usb_header(
+    uint8_t header[BOP_USB_HEADER_SIZE], uint8_t status, size_t payload_size, uint32_t crc)
+{
+    memset(header, 0, BOP_USB_HEADER_SIZE);
+    memcpy(header, "P0PU", 4);
+    header[4] = BOP_USB_PROTOCOL_VERSION;
+    header[5] = status;
+    write_uint16_le(&header[6], BOP_USB_HEADER_SIZE);
+    write_uint32_le(&header[8], payload_size);
+    write_uint32_le(&header[12], crc);
+}
+
+static bool send_usb_response(
+    uint8_t status, const uint8_t *payload, size_t payload_size)
+{
+    uint8_t header[BOP_USB_HEADER_SIZE];
+    uint32_t crc = payload_size == 0 ? 0 : esp_crc32_le(0, payload, payload_size);
+    make_usb_header(header, status, payload_size, crc);
+
+    xSemaphoreTakeRecursive(serial_output_mutex, portMAX_DELAY);
+    const TickType_t start = xTaskGetTickCount();
+    bool sent = write_serial_bytes(header, sizeof(header), start);
+    if (sent && payload_size != 0) {
+        sent = write_serial_bytes(payload, payload_size, start);
+    }
+    if (sent) {
+        sent = usb_serial_jtag_wait_tx_done(remaining_budget(start)) == ESP_OK;
+    }
+    xSemaphoreGiveRecursive(serial_output_mutex);
+    return sent;
+}
+
+static void log_usb_rejection(uint8_t status)
+{
+    switch (status) {
+    case BOP_USB_STATUS_NO_CREDENTIALS:
+        ESP_LOGW(TAG, "USB provisioning rejected: WiFi credentials are missing");
+        break;
+    case BOP_USB_STATUS_UNSUPPORTED_VERSION:
+        ESP_LOGW(TAG, "USB provisioning rejected: unsupported protocol version");
+        break;
+    case BOP_USB_STATUS_INVALID_LENGTH:
+        ESP_LOGW(TAG, "USB provisioning rejected: invalid frame length");
+        break;
+    case BOP_USB_STATUS_INTEGRITY:
+        ESP_LOGW(TAG, "USB provisioning rejected: integrity check failed");
+        break;
+    case BOP_USB_STATUS_STORAGE:
+        ESP_LOGW(TAG, "USB provisioning rejected: credential storage failed");
+        break;
+    case BOP_USB_STATUS_UNSUPPORTED_COMMAND:
+        ESP_LOGW(TAG, "USB provisioning rejected: unsupported command");
+        break;
+    default:
+        ESP_LOGW(TAG, "USB provisioning rejected: malformed frame");
+        break;
+    }
+}
+
+static void handle_usb_protocol(void)
+{
+    uint8_t frame[BOP_USB_HEADER_SIZE + BOP_USB_MAX_PAYLOAD_SIZE];
+    char client_id[BOP_CLIENT_ID_CAPACITY];
+    char refresh_token[BOP_REFRESH_TOKEN_CAPACITY];
+    uint8_t state_payload[1];
+    mbedtls_platform_zeroize(frame, sizeof(frame));
+    mbedtls_platform_zeroize(client_id, sizeof(client_id));
+    mbedtls_platform_zeroize(refresh_token, sizeof(refresh_token));
+    uint8_t command = 0;
+    uint8_t status = BOP_USB_STATUS_MALFORMED;
+    size_t payload_size = 0;
+    bool restart = false;
+    if (!read_serial_bytes(frame, BOP_USB_HEADER_SIZE)) {
+        goto respond;
+    }
+    if (memcmp(frame, "P0PU", 4) != 0) {
+        goto respond;
+    }
+    command = frame[5];
+    payload_size = read_uint32_le(&frame[8]);
+    if (read_uint16_le(&frame[6]) != BOP_USB_HEADER_SIZE
+        || payload_size > BOP_USB_MAX_PAYLOAD_SIZE) {
+        status = BOP_USB_STATUS_INVALID_LENGTH;
+        goto respond;
+    }
+    if (!read_serial_bytes(&frame[BOP_USB_HEADER_SIZE], payload_size)) {
+        status = BOP_USB_STATUS_MALFORMED;
+        goto respond;
+    }
+    if (frame[4] != BOP_USB_PROTOCOL_VERSION) {
+        status = BOP_USB_STATUS_UNSUPPORTED_VERSION;
+        goto respond;
+    }
+    if (command == BOP_USB_QUERY_COMMAND && payload_size != 0) {
+        status = BOP_USB_STATUS_INVALID_LENGTH;
+        goto respond;
+    }
+    if (command == BOP_USB_STORE_SPOTIFY_COMMAND && payload_size < 4) {
+        status = BOP_USB_STATUS_INVALID_LENGTH;
+        goto respond;
+    }
+    if (command != BOP_USB_QUERY_COMMAND && command != BOP_USB_STORE_SPOTIFY_COMMAND) {
+        status = BOP_USB_STATUS_UNSUPPORTED_COMMAND;
+        goto respond;
+    }
+    if (read_uint32_le(&frame[12])
+        != (payload_size == 0 ? 0 : esp_crc32_le(0, &frame[BOP_USB_HEADER_SIZE], payload_size))) {
+        status = BOP_USB_STATUS_INTEGRITY;
+        goto respond;
+    }
+
+    if (command == BOP_USB_QUERY_COMMAND) {
+        bop_provision_state_t state;
+        if (bop_credentials_load_state(&state) != ESP_OK) {
+            status = BOP_USB_STATUS_STORAGE;
+            goto respond;
+        }
+        state_payload[0] = (uint8_t)state;
+        status = BOP_USB_STATUS_OK;
+        payload_size = sizeof(state_payload);
+        goto respond;
+    }
+
+    const size_t client_length = read_uint16_le(&frame[BOP_USB_HEADER_SIZE]);
+    const size_t refresh_length = read_uint16_le(&frame[BOP_USB_HEADER_SIZE + 2]);
+    if (client_length == 0 || client_length >= BOP_CLIENT_ID_CAPACITY
+        || refresh_length == 0 || refresh_length >= BOP_REFRESH_TOKEN_CAPACITY
+        || client_length + refresh_length + 4 != payload_size) {
+        status = BOP_USB_STATUS_INVALID_LENGTH;
+        goto respond;
+    }
+    memcpy(client_id, &frame[BOP_USB_HEADER_SIZE + 4], client_length);
+    memcpy(
+        refresh_token,
+        &frame[BOP_USB_HEADER_SIZE + 4 + client_length],
+        refresh_length);
+    client_id[client_length] = '\0';
+    refresh_token[refresh_length] = '\0';
+
+    bop_provision_state_t state;
+    if (bop_credentials_load_state(&state) != ESP_OK) {
+        status = BOP_USB_STATUS_STORAGE;
+        goto respond;
+    }
+    if (state != BOP_PROVISION_WIFI_ONLY && state != BOP_PROVISION_COMPLETE) {
+        status = BOP_USB_STATUS_NO_CREDENTIALS;
+        goto respond;
+    }
+    if (bop_credentials_store_spotify(client_id, refresh_token) != ESP_OK) {
+        status = BOP_USB_STATUS_STORAGE;
+        goto respond;
+    }
+    status = BOP_USB_STATUS_OK;
+    payload_size = 0;
+    restart = true;
+
+respond:
+    bool response_sent;
+    if (status == BOP_USB_STATUS_OK && command == BOP_USB_QUERY_COMMAND) {
+        response_sent = send_usb_response(status, state_payload, payload_size);
+    } else {
+        response_sent = send_usb_response(status, NULL, 0);
+        if (status != BOP_USB_STATUS_OK) {
+            log_usb_rejection(status);
+        }
+    }
+    if (!response_sent) {
+        ESP_LOGW(TAG, "USB protocol response abandoned");
+    }
+    mbedtls_platform_zeroize(client_id, sizeof(client_id));
+    mbedtls_platform_zeroize(refresh_token, sizeof(refresh_token));
+    mbedtls_platform_zeroize(frame, sizeof(frame));
+    if (restart && response_sent && status == BOP_USB_STATUS_OK) {
+        vTaskDelay(pdMS_TO_TICKS(250));
+        esp_restart();
+    }
+}
+
 static void render_event(lv_event_t *event)
 {
     if (lv_event_get_code(event) == LV_EVENT_RENDER_START) {
@@ -280,6 +493,8 @@ static void screenshot_task(void *argument)
                 ESP_LOGW(TAG, "Screenshot refresh did not finish");
             }
             send_screenshot();
+        } else if (input == BOP_USB_START_BYTE) {
+            handle_usb_protocol();
         } else {
             handle_spotify_command(input);
         }

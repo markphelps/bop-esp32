@@ -307,11 +307,12 @@ def test_device_operation_uses_one_esptool_process() -> None:
 
 def test_firmware_shows_provisioning_before_spotify_starts() -> None:
     source = (device.project_root() / "firmware/main/app_main.c").read_text(encoding="utf-8")
-    assert source.index('create_placeholder("run:\\nmise run provision")') < source.index(
+    main = source[source.index("void app_main(void)") :]
+    assert main.index("create_portal_screen(&portal_configuration)") < main.index(
         "if (!provisioned) {"
     )
-    assert source.index("bop_screenshot_start(display)") < source.index("if (!provisioned) {")
-    assert source.index("if (!provisioned) {") < source.index("xTaskCreatePinnedToCore")
+    assert main.index("bop_screenshot_start(display)") < main.index("if (!provisioned) {")
+    assert main.index("if (!provisioned) {") < main.index("xTaskCreatePinnedToCore")
 
 
 def test_success_runs_verified_device_operation() -> None:

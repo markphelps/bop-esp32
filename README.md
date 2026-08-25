@@ -63,10 +63,17 @@ CI runs on Linux only. Use macOS for the supported hardware procedure.
 4. Read [INSTALL.md](INSTALL.md), [EULA.md](EULA.md), and [PRIVACY.md](PRIVACY.md).
 5. Connect the board with a USB data cable.
 6. Run `mise install`.
-7. Run `mise run provision`.
-8. Run `mise run flash`.
+7. Run `mise run flash` without `--force`.
+8. Scan the QR code on Bop and join the **Bop setup AP**.
+9. Use the **captive portal** to save WiFi.
+10. Run the USB provisioning command, `mise run provision`.
+11. Enter the Spotify Client ID and complete Spotify authorization.
 
-`mise run provision` and `mise run flash` each take a credential-free backup first. A backup made before the first flash is the factory image. `mise run flash -- --force` flashes with no backup. It warns and takes none, and it never makes a backup of a provisioned board possible.
+The first flash takes a credential-free factory backup. The captive portal then writes only the verified WiFi values.
+
+The USB provisioning command queries the device state, then sends only the Spotify Client ID and refresh token. It never reads or rewrites WiFi values.
+
+CAUTION: Do not use `mise run flash -- --force` for the first flash. It takes no backup. After portal setup, `mise run provision` cannot make its required credential-free backup.
 
 If a valid backup exists, the backup task validates it and does not read the board. If an incomplete or invalid backup exists, the task stops. Move that backup out of `backups/` before you try again.
 

@@ -6,6 +6,8 @@ idf_component_register(
         "app_main.c"
         "credentials.c"
         "power.c"
+        "provisioning/dns_hijack.c"
+        "provisioning/portal.c"
         "screenshot.c"
         "spotify/spotify.c"
         "ui/art.c"
@@ -14,9 +16,11 @@ idf_component_register(
         "wifi.c"
     INCLUDE_DIRS "."
     REQUIRES
+        bootloader_support
         esp32_s3_touch_amoled_1_8
         esp_driver_usb_serial_jtag
         esp_http_client
+        esp_http_server
         esp_netif
         esp_timer
         esp_wifi
@@ -26,6 +30,8 @@ idf_component_register(
         lvgl__lvgl
         mbedtls
         nvs_flash
+    EMBED_TXTFILES
+        "provisioning/portal_page.html"
 )
 
 idf_build_get_property(build_components BUILD_COMPONENTS)

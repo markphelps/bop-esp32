@@ -31,6 +31,39 @@ port. A charge-only cable cannot transfer data.
 Use these steps when automatic reset does not work. Read
 [INSTALL.md](../INSTALL.md) before you run `mise run flash`.
 
+## The captive portal does not open
+
+1. Scan the QR code on the Bop screen.
+2. Join the **Bop setup AP** that the screen shows.
+3. If the page does not open, go to <http://192.168.4.1/>.
+4. When the phone reports that the AP has no internet, keep the phone connected.
+
+The Bop setup AP uses a new password after each restart. Use the current screen values.
+
+## The captive portal reports a connection failure
+
+The captive portal stays available after a failed join. It also clears the password field.
+
+1. Select the network again.
+2. Enter the WiFi password again.
+3. Submit the form.
+
+For a hidden network, select manual entry and enter the network name. Bop saves the values only after it receives an IP address.
+
+## The captive portal marks a network as unsupported
+
+The captive portal supports open, WPA2-Personal, and WPA3-Personal networks. It marks WEP and enterprise networks as unsupported.
+
+Use a supported guest network or change the access-point security mode. Do not enter enterprise credentials through manual entry.
+
+## A saved network is unavailable before USB provisioning
+
+In the **WiFi-only state**, Bop tries the saved network for 15 seconds. It starts the captive portal when the attempt times out.
+
+Restore the saved network, or use the captive portal to select a different network. Then run the USB provisioning command, `mise run provision`.
+
+The USB provisioning command asks only for the Spotify Client ID. It keeps the WiFi values that the captive portal stored.
+
 ## The board shows `offline`
 
 The board could not connect to the saved WiFi network. It reconnects when the
@@ -38,7 +71,7 @@ network becomes available.
 
 1. Make sure that the WiFi network is available.
 2. Make sure that the saved network name and password are correct.
-3. If the values are wrong, run `mise run provision` to write new values.
+3. If the values are wrong, run `mise run deprovision`, then use the captive portal to save new values and run `mise run provision` again.
 
 `mise run provision` requires the legal agreement and a credential-free backup.
 Read [INSTALL.md](../INSTALL.md) before you provision again.

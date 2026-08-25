@@ -24,11 +24,17 @@ LVGL draws the interface. `esp_lvgl_port` runs the LVGL task on core 1. Code out
 
 `app_main` starts the display, touch, brightness, and AXP2101 monitor. Display startup also starts the LVGL task on core 1. It then reads the saved credentials from NVS.
 
-If no credentials exist, the display shows `run: mise run provision`. The firmware does not start the Bop UI, album-art, WiFi, or Spotify tasks.
+Bop classifies the values as no credentials, the **WiFi-only state**, or complete credentials.
 
-If credentials exist, the firmware initializes the Bop UI. This creates its 250 ms timer on the existing LVGL task and starts the album-art task on core 0.
+With no credentials, Bop prepares the **Bop setup AP** before WiFi starts. It shows the AP name, password, and QR code. Then it starts the **captive portal**.
 
-The firmware starts WiFi connection and time synchronization on core 0. It starts Spotify polling on core 0 after WiFi and time synchronization succeed.
+In the WiFi-only state, Bop tries the saved network for 15 seconds. A failed connection starts the same prepared captive portal.
+
+A successful WiFi-only connection synchronizes time. Bop then shows the USB provisioning command, `mise run provision`. A time-sync failure shows the same command with a recovery message.
+
+With complete credentials, Bop initializes the current UI. This creates its 250 ms timer and starts the album-art task on core 0.
+
+The complete state starts WiFi connection and time synchronization on core 0. It starts Spotify polling after both operations succeed.
 
 The UI reads a protected playback-state snapshot and redraws only when it changes.
 
@@ -37,11 +43,24 @@ app_main
   |
   +-- display startup and LVGL task on core 1
   +-- touch, brightness, and AXP2101 monitor
-  +-- credentials from NVS
-  +-- Bop UI timer on core 1 and album-art task on core 0
-  +-- WiFi connection and time synchronization on core 0
-  +-- Spotify polling task on core 0
+  +-- credential state from NVS
+      |
+      +-- none: Bop setup AP and captive portal
+      +-- WiFi-only state: bounded WiFi, time sync, or captive portal
+      +-- complete: Bop UI, WiFi, time sync, and Spotify
 ```
+
+## Captive portal and WiFi credentials
+
+`provisioning/portal.c` prepares the random Bop setup AP. It also scans networks, serves the embedded page, validates requests, and verifies a connection.
+
+`provisioning/dns_hijack.c` validates DNS questions and answers valid A-record questions with `192.168.4.1`. The captive portal also uses this address.
+
+`wifi.c` owns the shared ESP-IDF network services, interfaces, driver, and event handlers. Portal transitions reuse these services.
+
+The captive portal supports open, WPA2-Personal, and WPA3-Personal networks. It shows WEP and enterprise networks as unsupported.
+
+`credentials.c` is the only firmware module that writes WiFi values. The captive portal calls it only after the station receives an IP address.
 
 ## Spotify OAuth and NVS
 
@@ -49,7 +68,9 @@ app_main
 
 The tool uses the Spotify Authorization Code flow with PKCE. The browser returns to a temporary loopback server at `127.0.0.1`.
 
-The provisioning tool writes the WiFi network name, WiFi password, Spotify Client ID, and refresh token to Bop NVS through USB. The tool removes its temporary host files after it writes the NVS image.
+The USB provisioning command queries the device state before Spotify authorization. It sends only the Spotify Client ID and refresh token through a bounded USB frame.
+
+The firmware writes both Spotify values in one NVS transaction. It never reads, names, or replaces the WiFi values on this path.
 
 The board has no Spotify client secret. On startup, it exchanges the refresh token for a short-lived access token.
 
@@ -118,7 +139,7 @@ Run `mise install` first. It installs the pinned host tools and then runs `mise 
 | `mise run build-perf` | Builds performance firmware in `firmware/build-perf`. |
 | `mise run backup` | Backs up a credential-free 16 MB image. |
 | `mise run restore` | Writes a checked credential-free image after explicit approval. |
-| `mise run provision` | Authorizes Spotify and writes WiFi and Spotify values to NVS. |
+| `mise run provision` | Authorizes Spotify and writes only Spotify values to NVS. |
 | `mise run deprovision` | Opens Spotify access removal, then erases Bop credentials through USB. |
 | `mise run flash` | Flashes normal firmware after a credential-free backup. |
 | `mise run flash -- --force` | Flashes normal firmware and takes no backup. It warns in one line. |

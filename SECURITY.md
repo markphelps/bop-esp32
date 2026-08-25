@@ -49,11 +49,21 @@ each report.
 **A person who has your board can read your WiFi password and your Spotify
 refresh token.**
 
-`mise run provision` writes the WiFi SSID, the WiFi password, the Spotify
-client ID, and the Spotify refresh token to the NVS partition **as plaintext**.
-Bop does not enable NVS encryption, Secure Boot, or flash encryption. Anyone
-who can attach a USB cable to the board can read the whole flash, and can
-recover all four values.
+The captive portal writes the WiFi SSID and password to the NVS partition **as plaintext**. The USB provisioning command later adds or replaces only the Spotify client ID and refresh token.
+
+Bop does not enable NVS encryption, Secure Boot, or flash encryption. Anyone with a USB cable can read the whole flash and recover the stored values.
+
+## The two WiFi password paths
+
+During first setup, your phone sends the WiFi password to the captive portal. The page uses local HTTP through the WPA2-protected Bop setup AP.
+
+The firmware keeps the submitted password in bounded memory buffers. It does not log the password or put it in an HTTP response.
+
+Bop stores the WiFi values only after the station receives an IP address. It clears the request and decoded password buffers on every response path.
+
+The USB provisioning command, `mise run provision`, asks only for the Spotify Client ID. It sends the Client ID and refresh token through a bounded USB frame.
+
+The firmware writes both Spotify values in one NVS transaction. It does not read or rewrite either WiFi key.
 
 This is a deliberate design decision, not a defect. Flash encryption on the
 ESP32-S3 needs eFuse key provisioning. That step can be irreversible, and it

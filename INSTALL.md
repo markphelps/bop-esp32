@@ -31,20 +31,26 @@ Do not create or enter a client secret. Bop uses OAuth PKCE and needs only the C
 3. Run `cd bop-esp32`.
 4. Connect the board with a USB data cable.
 5. Run `mise install`.
-6. Run `mise run provision`.
-7. Read the shown paths for `EULA.md` and `PRIVACY.md`.
-8. Type `I AGREE` exactly when the command asks.
-9. Enter the WiFi values and Spotify Client ID.
-10. Complete Spotify authorization in the browser.
-11. Run `mise run flash`.
+6. Run `mise run flash` without `--force`.
+7. Wait for Bop to show the **Bop setup AP** and its QR code.
+8. Scan the QR code and join the Bop setup AP.
+9. Use the **captive portal** to select a WiFi network and enter its password.
+10. Wait for Bop to restart in the **WiFi-only state**.
+11. Run the USB provisioning command, `mise run provision`.
+12. Read the shown paths for `EULA.md` and `PRIVACY.md`.
+13. When the command asks, type `I AGREE` exactly.
+14. Enter the Spotify Client ID.
+15. Complete Spotify authorization in the browser.
 
-`mise run provision` requires a credential-free backup. A backup made before the first flash is the factory image. `mise run flash` takes that same backup before it flashes.
+The first flash takes a credential-free factory backup. The captive portal writes only the WiFi values after Bop connects to that network.
 
-`mise run flash -- --force` flashes and takes no backup. Use it when the board holds credentials and no valid backup exists. It warns in one line. No flag makes a backup of a provisioned board possible.
+The USB provisioning command queries the device state, then sends only the Spotify Client ID and refresh token. It never reads or rewrites WiFi values.
 
-CAUTION: After a forced flash with no valid backup, you cannot restore the shipped board state.
+CAUTION: Do not use `mise run flash -- --force` for the first flash. The command takes no backup. After portal setup, `mise run provision` cannot make its required credential-free backup.
 
-If a valid backup exists, the backup task validates it and does not read the board. If an incomplete or invalid backup exists, the task stops. Move that backup out of `backups/` before you try again.
+No flag makes a backup of a provisioned board possible. If a valid backup exists, the backup task validates it and does not read the board.
+
+If an incomplete or invalid backup exists, the task stops. Move that backup out of `backups/` before you try again.
 
 If no backup exists, the task reads the credential partition first. It reads all flash only when the partition has no credentials.
 
@@ -52,7 +58,7 @@ The backup command reads the 24 KB credential partition first. It refuses to mak
 
 Set `BOP_PORT` when more than one Espressif board is connected. Set `BOP_IDF_PATH` to use an ESP-IDF checkout outside the default location.
 
-After the flash, the board restarts. It connects to WiFi and shows Spotify playback when a player is active.
+After USB provisioning, the board restarts. It connects to WiFi and shows Spotify playback when a player is active.
 
 ## Update the firmware
 

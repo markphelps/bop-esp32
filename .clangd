@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 Mark Phelps
+# SPDX-License-Identifier: Apache-2.0
+
+CompileFlags:
+  CompilationDatabase: firmware/build
+  Remove:
+    - -mlongcalls
+    - -mdisable-hardware-atomics
+    - -fno-shrink-wrap
+    - -fstrict-volatile-bitfields
+    - -fno-tree-switch-conversion
+Diagnostics:
+  Suppress:
+    - pp_file_not_found
+  UnusedIncludes: None

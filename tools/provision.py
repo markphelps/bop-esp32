@@ -2,31 +2,31 @@
 # SPDX-FileCopyrightText: 2026 Mark Phelps
 # SPDX-License-Identifier: Apache-2.0
 
-"""Authorize Spotify and write WiFi and OAuth values to the device NVS partition."""
+"""Authorize Spotify and send only Spotify credentials to the device."""
 
 from __future__ import annotations
 
 import base64
-import csv
 from getpass import getpass
 import hashlib
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
+import importlib.util
 import json
 import os
 from pathlib import Path
-import platform
 import secrets
-import shutil
-import subprocess
+import struct
 import sys
-import tempfile
 import time
 from typing import Any, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
 import webbrowser
+import zlib
+
+import screenshot as screenshot_serial
 
 AUTH_URL = "https://accounts.spotify.com/authorize"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
@@ -34,13 +34,52 @@ SCOPES = "user-read-playback-state user-modify-playback-state"
 CALLBACK_HOST = "127.0.0.1"
 CALLBACK_PATH = "/callback"
 DEFAULT_CALLBACK_PORT = 43821
-NVS_OFFSET = "0x9000"
-NVS_SIZE = "0x6000"
-# The firmware opens this namespace in firmware/main/credentials.c
-# (BOP_NVS_NAMESPACE). A change to one side without the other leaves a
-# provisioned board reading an empty namespace and showing the provisioning
-# screen. test_provision.py holds the two sides together.
-NVS_NAMESPACE = "bop"
+# These bytes avoid the legacy serial playback keys (`n`, `b`, `t`, and `s`).
+# An older Bop ignores the preflight frame instead of changing playback before
+# the host reports that firmware support is missing.
+USB_MAGIC = b"P0PU"
+USB_START_BYTE = b"\x7f"
+USB_PROTOCOL_VERSION = 1
+USB_HEADER = struct.Struct("<4sBBHII")
+USB_HEADER_LENGTH = USB_HEADER.size
+USB_MAX_PAYLOAD = 65 + 1024 + 4
+USB_QUERY_COMMAND = 1
+USB_STORE_SPOTIFY_COMMAND = 2
+USB_STATUS_OK = 0
+USB_STATUS_NO_CREDENTIALS = 1
+USB_STATUS_MALFORMED = 2
+USB_STATUS_UNSUPPORTED_VERSION = 3
+USB_STATUS_INVALID_LENGTH = 4
+USB_STATUS_INTEGRITY = 5
+USB_STATUS_STORAGE = 6
+USB_STATUS_UNSUPPORTED_COMMAND = 7
+USB_STATE_NONE = 0
+USB_STATE_WIFI_ONLY = 1
+USB_STATE_COMPLETE = 2
+USB_NOISE_LIMIT = 65536
+USB_RESPONSE_TIMEOUT = 8
+open_serial = screenshot_serial.open_serial
+
+
+def provisioning_serial_factory(arguments: list[str]) -> Any:
+    if importlib.util.find_spec("serial") is None:
+        python = screenshot_serial.detect_port.esptool_python()
+        if python is None or os.environ.get("BOP_PROVISION_PYSERIAL_REEXEC") == "1":
+            raise RuntimeError("pyserial is unavailable. Run `mise install` to install esptool.")
+        environment = os.environ.copy()
+        environment["BOP_PROVISION_PYSERIAL_REEXEC"] = "1"
+        os.execve(
+            str(python),
+            [str(python), str(Path(__file__).resolve()), *arguments[1:]],
+            environment,
+        )
+        raise AssertionError("The esptool Python re-execution returned")
+    import serial  # pyright: ignore[reportMissingModuleSource]
+
+    return serial.Serial
+
+
+serial_factory = provisioning_serial_factory
 LEGAL_DOCUMENTS = ("EULA.md", "PRIVACY.md")
 LEGAL_AGREEMENT_PROMPT = (
     "Type I AGREE to accept EULA.md and PRIVACY.md before Spotify authorization: "
@@ -66,48 +105,6 @@ def require_legal_agreement() -> None:
         raise RuntimeError(
             "Provisioning stopped. Type I AGREE exactly to start Spotify authorization."
         )
-
-
-def command_output(command: list[str]) -> str:
-    try:
-        return subprocess.check_output(command, text=True, stderr=subprocess.DEVNULL).strip()
-    except (OSError, subprocess.CalledProcessError):
-        return ""
-
-
-def mac_wifi_interfaces() -> list[str]:
-    output = command_output(["networksetup", "-listallhardwareports"])
-    interfaces: list[str] = []
-    wifi_port = False
-    for line in output.splitlines():
-        if line.startswith("Hardware Port:"):
-            wifi_port = line.partition(":")[2].strip() in {"Wi-Fi", "AirPort"}
-        elif wifi_port and line.startswith("Device:"):
-            interfaces.append(line.partition(":")[2].strip())
-    return interfaces
-
-
-def current_ssid() -> str:
-    system = platform.system()
-    if system == "Darwin":
-        prefix = "Current Wi-Fi Network: "
-        for interface in mac_wifi_interfaces():
-            output = command_output(["networksetup", "-getairportnetwork", interface])
-            if output.startswith(prefix):
-                return output[len(prefix) :]
-        return ""
-    if system == "Linux":
-        output = command_output(["nmcli", "-t", "-f", "ACTIVE,SSID", "device", "wifi"])
-        for line in output.splitlines():
-            if line.startswith("yes:"):
-                return line.split(":", 1)[1].replace(r"\:", ":")
-    if system == "Windows":
-        output = command_output(["netsh", "wlan", "show", "interfaces"])
-        for line in output.splitlines():
-            key, separator, value = line.partition(":")
-            if separator and key.strip() == "SSID":
-                return value.strip()
-    return ""
 
 
 def prompt_value(label: str, default: str = "", *, secret: bool = False) -> str:
@@ -249,72 +246,113 @@ def token_request(fields: dict[str, str]) -> dict[str, Any]:
     return payload
 
 
-def write_nvs_csv(path: Path, ssid: str, password: str, client_id: str, refresh_token: str) -> None:
-    with path.open("w", newline="", encoding="utf-8") as output:
-        writer = csv.writer(output)
-        writer.writerow(["key", "type", "encoding", "value"])
-        writer.writerow([NVS_NAMESPACE, "namespace", "", ""])
-        writer.writerow(["wifi_ssid", "data", "string", ssid])
-        writer.writerow(["wifi_pass", "data", "string", password])
-        writer.writerow(["client_id", "data", "string", client_id])
-        writer.writerow(["refresh_tok", "data", "string", refresh_token])
-    path.chmod(0o600)
-
-
-def idf_path() -> Path:
-    configured = os.environ.get("BOP_IDF_PATH")
-    return Path(configured).expanduser() if configured else Path.home() / ".local/share/esp-idf"
-
-
-def generate_nvs(csv_path: Path, image_path: Path) -> None:
-    root = idf_path()
-    generator = root / "components/nvs_flash/nvs_partition_generator/nvs_partition_gen.py"
-    arguments = [str(generator), "generate", str(csv_path), str(image_path), NVS_SIZE]
-    if os.name == "nt":
-        command = (
-            f'call "{root / "export.bat"}" >nul && python {subprocess.list2cmdline(arguments)}'
+def read_response(connection: Any) -> tuple[int, bytes]:
+    deadline = time.monotonic() + USB_RESPONSE_TIMEOUT
+    buffer = bytearray()
+    while time.monotonic() < deadline:
+        chunk = connection.read(4096)
+        if chunk:
+            buffer.extend(chunk)
+        position = buffer.find(USB_MAGIC)
+        if position < 0:
+            if len(buffer) > USB_NOISE_LIMIT:
+                raise RuntimeError(
+                    "The device returned too much USB output before its protocol response"
+                )
+            continue
+        if position > USB_NOISE_LIMIT:
+            raise RuntimeError(
+                "The device returned too much USB output before its protocol response"
+            )
+        if position:
+            del buffer[:position]
+        if len(buffer) < USB_HEADER_LENGTH:
+            continue
+        magic, version, status, header_length, payload_length, expected_crc = USB_HEADER.unpack(
+            buffer[:USB_HEADER_LENGTH]
         )
-        subprocess.run(["cmd.exe", "/d", "/s", "/c", command], check=True)
-    else:
-        script = '. "$1" >/dev/null && shift && exec python "$@"'
-        subprocess.run(
-            ["bash", "-c", script, "idf-wrapper", str(root / "export.sh"), *arguments], check=True
-        )
-    image_path.chmod(0o600)
-    expected_size = int(NVS_SIZE, 0)
-    if image_path.stat().st_size != expected_size:
-        raise RuntimeError(f"NVS image must be exactly {expected_size} bytes")
-
-
-def detect_port() -> str:
-    result = subprocess.run(
-        [sys.executable, str(project_root() / "tools/detect_port.py")],
-        check=True,
-        text=True,
-        capture_output=True,
+        if magic != USB_MAGIC:
+            raise RuntimeError("The device returned an invalid USB protocol response")
+        if version != USB_PROTOCOL_VERSION:
+            raise RuntimeError(f"The device returned unsupported USB protocol version {version}")
+        if header_length != USB_HEADER_LENGTH or payload_length > USB_MAX_PAYLOAD:
+            raise RuntimeError("The device returned an invalid USB protocol length")
+        frame_length = USB_HEADER_LENGTH + payload_length
+        if len(buffer) < frame_length:
+            continue
+        payload = bytes(buffer[USB_HEADER_LENGTH:frame_length])
+        actual_crc = zlib.crc32(payload) & 0xFFFFFFFF
+        if actual_crc != expected_crc:
+            raise RuntimeError("The device returned a USB integrity error")
+        return status, payload
+    raise RuntimeError(
+        "The device did not answer the Spotify-only USB protocol. Run `mise run flash` and retry."
     )
-    return result.stdout.strip()
 
 
-def flash_nvs(image_path: Path) -> None:
-    esptool = shutil.which("esptool") or shutil.which("esptool.py")
-    if esptool is None:
-        raise RuntimeError("esptool is unavailable. Run `mise install` first")
-    subprocess.run(
-        [
-            esptool,
-            "--chip",
-            "esp32s3",
-            "--port",
-            detect_port(),
-            "--after",
-            "hard-reset",
-            "write-flash",
-            NVS_OFFSET,
-            str(image_path),
-        ],
-        check=True,
+def send_frame(connection: Any, command: int, payload: bytes | bytearray) -> tuple[int, bytes]:
+    if len(payload) > USB_MAX_PAYLOAD:
+        raise ValueError("USB protocol payload is too large")
+    header = USB_HEADER.pack(
+        USB_MAGIC,
+        USB_PROTOCOL_VERSION,
+        command,
+        USB_HEADER_LENGTH,
+        len(payload),
+        zlib.crc32(payload) & 0xFFFFFFFF,
     )
+    connection.write(USB_START_BYTE + header + payload)
+    connection.flush()
+    return read_response(connection)
+
+
+def open_connection(arguments: list[str]) -> Any:
+    return open_serial(serial_factory(arguments))
+
+
+def query_state(connection: Any) -> int:
+    connection.reset_input_buffer()
+    status, payload = send_frame(connection, USB_QUERY_COMMAND, b"")
+    if status != USB_STATUS_OK:
+        raise RuntimeError(f"The device rejected the USB state query with status {status}")
+    if len(payload) != 1 or payload[0] not in {
+        USB_STATE_NONE,
+        USB_STATE_WIFI_ONLY,
+        USB_STATE_COMPLETE,
+    }:
+        raise RuntimeError("The device returned an invalid credential state")
+    return payload[0]
+
+
+def store_spotify(arguments: list[str], client_id: str, refresh_token: str) -> None:
+    client_bytes = bytearray(client_id.encode("utf-8"))
+    refresh_bytes = bytearray(refresh_token.encode("utf-8"))
+    payload = bytearray()
+    connection = None
+    try:
+        payload.extend(struct.pack("<HH", len(client_bytes), len(refresh_bytes)))
+        payload.extend(client_bytes)
+        payload.extend(refresh_bytes)
+        connection = open_connection(arguments)
+        state = query_state(connection)
+        if state == USB_STATE_NONE:
+            raise RuntimeError(
+                "The device has no WiFi credentials. Complete captive-portal setup first"
+            )
+        status, response = send_frame(connection, USB_STORE_SPOTIFY_COMMAND, payload)
+        if status == USB_STATUS_NO_CREDENTIALS:
+            raise RuntimeError(
+                "The device has no WiFi credentials. Complete captive-portal setup first"
+            )
+        if status != USB_STATUS_OK or response:
+            raise RuntimeError(
+                f"The device rejected Spotify credential storage with status {status}"
+            )
+    finally:
+        for value in (client_bytes, refresh_bytes, payload):
+            value[:] = b"\x00" * len(value)
+        if connection is not None:
+            connection.close()
 
 
 def main() -> int:
@@ -323,34 +361,25 @@ def main() -> int:
         if not 1 <= callback_port <= 65535:
             raise ValueError("BOP_OAUTH_PORT must be from 1 through 65535")
         redirect_uri = f"http://{CALLBACK_HOST}:{callback_port}{CALLBACK_PATH}"
+        connection = open_connection(sys.argv)
+        try:
+            state = query_state(connection)
+        finally:
+            connection.close()
+        if state == USB_STATE_NONE:
+            raise RuntimeError(
+                "The device has no WiFi credentials. Complete captive-portal setup first"
+            )
+
         require_legal_agreement()
         print_dashboard_steps(redirect_uri)
-
-        ssid = prompt_value("WiFi SSID", os.environ.get("BOP_WIFI_SSID", current_ssid()))
-        password = prompt_value("WiFi password (input is hidden)", secret=True)
         client_id = prompt_value("Spotify Client ID", os.environ.get("BOP_CLIENT_ID", ""))
-        make_sure_value_fits("WiFi SSID", ssid, 32)
-        make_sure_value_fits("WiFi password", password, 64, allow_empty=True)
         make_sure_value_fits("Spotify Client ID", client_id, 64)
-
         refresh_token = authorize(client_id, redirect_uri, callback_port)
         make_sure_value_fits("Spotify refresh token", refresh_token, 1023)
-        with tempfile.TemporaryDirectory(prefix="bop-provision-") as directory:
-            temporary = Path(directory)
-            csv_path = temporary / "credentials.csv"
-            image_path = temporary / "nvs.bin"
-            write_nvs_csv(csv_path, ssid, password, client_id, refresh_token)
-            generate_nvs(csv_path, image_path)
-            flash_nvs(image_path)
-        print("Provisioning is complete. The device has restarted.")
-    except (
-        EOFError,
-        OSError,
-        RuntimeError,
-        TimeoutError,
-        ValueError,
-        subprocess.CalledProcessError,
-    ) as error:
+        store_spotify(sys.argv, client_id, refresh_token)
+        print("Provisioning is complete. The device acknowledged the write and restarted.")
+    except (EOFError, OSError, RuntimeError, TimeoutError, ValueError) as error:
         print(f"provisioning failed: {error}", file=sys.stderr)
         return 1
     return 0

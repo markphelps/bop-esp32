@@ -39,7 +39,7 @@ depends = ["setup"]
 run = "python tools/restore.py"
 
 [tasks.provision]
-description = "Authorize Spotify and write WiFi values to the device"
+description = "Authorize Spotify and write Spotify values to the device"
 depends = ["setup", "backup"]
 run = "python tools/provision.py"
 
@@ -79,7 +79,7 @@ run = "python tools/screenshot.py"
 
 [tasks.test-host]
 description = "Run host-side task checks without a board"
-run = "python tools/test_task_cancellation.py && python tools/test_provision.py && python tools/test_display_recovery.py && python tools/test_playback_feedback.py && python tools/test_deprovision.py && python tools/test_backup.py && python tools/test_screenshot.py"
+run = "python tools/test_task_cancellation.py && python tools/test_provision.py && python tools/test_portal.py && python tools/test_display_recovery.py && python tools/test_playback_feedback.py && python tools/test_deprovision.py && python tools/test_backup.py && python tools/test_screenshot.py"
 
 [tasks.format]
 description = "Format the host tools with Ruff"

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <stdbool.h>
+#include <string.h>
 
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
@@ -16,6 +17,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "power.h"
+#include "provisioning/portal.h"
 #include "screenshot.h"
 #include "spotify/spotify.h"
 #include "ui/ui.h"
@@ -24,39 +26,163 @@
 #define LVGL_TASK_CORE 1
 #define SPOTIFY_TASK_CORE 0
 #define DISPLAY_BUFFER_ROWS 100
+// The BSP defines a zero display-lock timeout as an indefinite wait.
+#define DISPLAY_LOCK_FOREVER_MS 0
 #define CO5300_QSPI_NOP 0x02000000
 
 static const char *TAG = "bop";
 static bop_credentials_t credentials;
+static bop_provision_state_t provision_state = BOP_PROVISION_NONE;
+static bop_portal_config_t portal_configuration;
 static esp_lcd_panel_handle_t display_panel;
 static esp_lcd_panel_io_handle_t display_panel_io;
 
-static void create_placeholder(const char *text)
+static lv_obj_t *prepare_setup_screen(void)
 {
     lv_obj_t *screen = lv_screen_active();
+    lv_obj_clean(screen);
     lv_obj_set_style_bg_color(screen, lv_color_hex(0x080808), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, LV_PART_MAIN);
+    return screen;
+}
 
+static void create_placeholder(const char *text)
+{
+    lv_obj_t *screen = prepare_setup_screen();
     lv_obj_t *label = lv_label_create(screen);
     lv_label_set_text(label, text);
+    lv_obj_set_width(label, BSP_LCD_H_RES - 32);
     lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
     lv_obj_set_style_text_color(label, lv_color_hex(0x1DB954), LV_PART_MAIN);
     lv_obj_set_style_text_font(label, &lv_font_montserrat_24, LV_PART_MAIN);
     lv_obj_center(label);
 }
 
+static void create_portal_screen(const bop_portal_config_t *configuration)
+{
+    lv_obj_t *screen = prepare_setup_screen();
+
+    lv_obj_t *heading = lv_label_create(screen);
+    lv_label_set_text(heading, "Bop WiFi setup");
+    lv_obj_set_width(heading, BSP_LCD_H_RES - 32);
+    lv_obj_set_pos(heading, 16, 18);
+    lv_obj_set_style_text_align(heading, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(heading, lv_color_hex(0x1DB954), 0);
+    lv_obj_set_style_text_font(heading, &lv_font_montserrat_24, 0);
+
+    lv_obj_t *credentials_label = lv_label_create(screen);
+    lv_label_set_text_fmt(
+        credentials_label,
+        "Network: %s\nPassword: %s",
+        configuration->ap_name,
+        configuration->ap_password);
+    lv_obj_set_width(credentials_label, BSP_LCD_H_RES - 32);
+    lv_obj_set_pos(credentials_label, 16, 60);
+    lv_obj_set_style_text_align(credentials_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(credentials_label, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(credentials_label, &lv_font_montserrat_14, 0);
+
+    lv_obj_t *qr_code = lv_qrcode_create(screen);
+    lv_qrcode_set_size(qr_code, 210);
+    lv_qrcode_set_dark_color(qr_code, lv_color_hex(0x000000));
+    lv_qrcode_set_light_color(qr_code, lv_color_hex(0xFFFFFF));
+    lv_obj_align(qr_code, LV_ALIGN_TOP_MID, 0, 116);
+    if (lv_qrcode_update(
+            qr_code,
+            configuration->qr_payload,
+            strlen(configuration->qr_payload))
+        != LV_RESULT_OK) {
+        ESP_LOGE(TAG, "Setup QR code creation failed");
+    }
+
+    lv_obj_t *caption = lv_label_create(screen);
+    lv_label_set_text(caption, "Scan to connect, then follow the setup page");
+    lv_obj_set_width(caption, BSP_LCD_H_RES - 40);
+    lv_obj_set_pos(caption, 20, 352);
+    lv_obj_set_style_text_align(caption, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(caption, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(caption, &lv_font_montserrat_14, 0);
+}
+
+static esp_err_t show_placeholder(const char *text)
+{
+    if (!bsp_display_lock(DISPLAY_LOCK_FOREVER_MS)) {
+        return ESP_ERR_TIMEOUT;
+    }
+    create_placeholder(text);
+    bsp_display_unlock();
+    return ESP_OK;
+}
+
+static esp_err_t show_portal_screen(void)
+{
+    if (!bsp_display_lock(DISPLAY_LOCK_FOREVER_MS)) {
+        return ESP_ERR_TIMEOUT;
+    }
+    create_portal_screen(&portal_configuration);
+    bsp_display_unlock();
+    return ESP_OK;
+}
+
 static void startup_task(void *argument)
 {
     bop_credentials_t *configured_credentials = argument;
-    esp_err_t error = bop_wifi_connect(configured_credentials);
-    if (error == ESP_OK) {
-        error = bop_time_sync();
+    esp_err_t error = bop_wifi_init();
+    if (provision_state == BOP_PROVISION_COMPLETE) {
+        if (error == ESP_OK) {
+            error = bop_wifi_connect(configured_credentials);
+        }
+        if (error == ESP_OK) {
+            error = bop_time_sync();
+        }
+        if (error == ESP_OK) {
+            error = bop_spotify_start(configured_credentials);
+        }
+        if (error != ESP_OK) {
+            ESP_LOGE(TAG, "Startup failed: %s", esp_err_to_name(error));
+        }
+        vTaskDelete(NULL);
+        return;
     }
+
     if (error == ESP_OK) {
-        error = bop_spotify_start(configured_credentials);
+        error = bop_wifi_connect_bounded(configured_credentials);
+    }
+    if (error == ESP_ERR_TIMEOUT) {
+        error = bop_portal_start(&portal_configuration);
+        if (error != ESP_OK) {
+            ESP_LOGE(TAG, "Portal start failed: %s", esp_err_to_name(error));
+            show_placeholder("WiFi setup failed.\nRestart Bop.");
+        } else {
+            esp_err_t display_error = show_portal_screen();
+            if (display_error != ESP_OK) {
+                ESP_LOGE(
+                    TAG,
+                    "Startup screen update failed: %s",
+                    esp_err_to_name(display_error));
+            }
+        }
+        vTaskDelete(NULL);
+        return;
     }
     if (error != ESP_OK) {
-        ESP_LOGE(TAG, "Startup failed: %s", esp_err_to_name(error));
+        ESP_LOGE(TAG, "WiFi startup failed: %s", esp_err_to_name(error));
+        show_placeholder("WiFi connection failed.\nRestart Bop.");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    error = bop_time_sync();
+    esp_err_t display_error;
+    if (error == ESP_OK) {
+        display_error = show_placeholder("WiFi ready.\nFinish setup:\nmise run provision");
+    } else {
+        ESP_LOGE(TAG, "Time synchronization failed: %s", esp_err_to_name(error));
+        display_error = show_placeholder(
+            "WiFi ready.\nTime sync failed.\nFinish setup:\nmise run provision");
+    }
+    if (display_error != ESP_OK) {
+        ESP_LOGE(TAG, "Startup screen update failed: %s", esp_err_to_name(display_error));
     }
     vTaskDelete(NULL);
 }
@@ -204,7 +330,14 @@ void app_main(void)
     if (credentials_error == ESP_OK) {
         credentials_error = bop_credentials_load(&credentials);
     }
-    const bool provisioned = credentials_error == ESP_OK;
+    if (credentials_error == ESP_OK) {
+        credentials_error = bop_credentials_state(&credentials, &provision_state);
+    }
+    if (credentials_error == ESP_OK && provision_state != BOP_PROVISION_COMPLETE) {
+        credentials_error = bop_portal_prepare(&portal_configuration);
+    }
+    const bool provisioned = credentials_error == ESP_OK
+        && provision_state == BOP_PROVISION_COMPLETE;
 
     if (!bsp_display_lock(0)) {
         ESP_LOGE(TAG, "LVGL lock failed");
@@ -213,8 +346,14 @@ void app_main(void)
     esp_err_t ui_error = ESP_OK;
     if (provisioned) {
         ui_error = bop_ui_start();
+    } else if (credentials_error != ESP_OK) {
+        create_placeholder("Credential error.\nRun:\nmise run deprovision");
+    } else if (provision_state == BOP_PROVISION_NONE) {
+        create_portal_screen(&portal_configuration);
+    } else if (provision_state == BOP_PROVISION_WIFI_ONLY) {
+        create_placeholder("Connecting to WiFi...");
     } else {
-        create_placeholder("run:\nmise run provision");
+        create_placeholder("Credential error.\nRun:\nmise run deprovision");
     }
     // The start runs after an initialization error too, because the serial task
     // answers the host with or without the mirror. bop_screenshot_start refuses
@@ -232,8 +371,18 @@ void app_main(void)
         return;
     }
     if (!provisioned) {
-        ESP_LOGW(TAG, "Provisioning values are missing: %s", esp_err_to_name(credentials_error));
-        return;
+        if (credentials_error != ESP_OK) {
+            ESP_LOGE(TAG, "Credential state failed: %s", esp_err_to_name(credentials_error));
+            return;
+        }
+        if (provision_state == BOP_PROVISION_NONE) {
+            esp_err_t portal_error = bop_portal_start(&portal_configuration);
+            if (portal_error != ESP_OK) {
+                ESP_LOGE(TAG, "Portal start failed: %s", esp_err_to_name(portal_error));
+                show_placeholder("WiFi setup failed.\nRestart Bop.");
+            }
+            return;
+        }
     }
     if (xTaskCreatePinnedToCore(
             startup_task, "bop_startup", 16384, &credentials, 5, NULL, SPOTIFY_TASK_CORE)

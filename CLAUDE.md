@@ -70,9 +70,22 @@ tested locally on the board, and Windows is not tested.
 ## Firmware architecture
 
 `app_main` (`firmware/main/app_main.c`) starts the display, screenshot state,
-and power monitor before it reads credentials. If NVS holds no credentials,
-the app shows a "run: mise run provision" screen and starts the screenshot
-serial task. It does not start the Bop UI, album-art, WiFi, or Spotify tasks.
+and power monitor before it reads credentials. It then selects one of three
+startup states:
+
+- With no credentials, Bop prepares the **Bop setup AP** before WiFi starts.
+  It starts the **captive portal** and shows the AP values and QR code.
+- In the **WiFi-only state**, Bop tries the saved network for 15 seconds. A
+  failed connection starts the captive portal. A successful connection shows
+  the USB provisioning command, `mise run provision`.
+- With complete credentials, Bop starts the current UI, WiFi, time sync, and
+  Spotify tasks.
+
+`provisioning/portal.c` owns AP preparation, network scanning, HTTP requests,
+and the embedded phone page. `provisioning/dns_hijack.c` owns the bounded DNS
+parser and responder. `wifi.c` owns shared ESP-IDF service and driver lifetime.
+The portal supports open, WPA2-Personal, and WPA3-Personal networks. It marks
+WEP and enterprise networks as unsupported.
 
 Work is divided across the two cores:
 
@@ -141,6 +154,12 @@ in the `bop` namespace. The firmware names them in
 `tools/device.py` as `CREDENTIAL_KEYS`. A change to one list needs the same
 change in the other, or the host safety checks stop finding credentials.
 
+`credentials.c` is the only firmware module that writes WiFi credentials. The
+captive portal calls `bop_credentials_store_wifi` after a verified connection.
+Spotify token rotation also writes through `credentials.c`. The USB provisioning
+command sends only the Spotify Client ID and refresh token through the bounded USB
+protocol. It never reads or replaces the portal WiFi values.
+
 The board holds no Spotify client secret. Provisioning uses PKCE on the host,
 and the board exchanges the refresh token for short-lived access tokens. It
 stores a rotated refresh token when Spotify returns one.
@@ -205,7 +224,8 @@ Some host checks assert on the text of other sources.
 `test_display_recovery.py` reads `app_main.c`. `test_playback_feedback.py`
 reads `ui.c`, `spotify.c`, and `spotify.h`. `test_deprovision.py` reads `app_main.c`,
 `firmware/CMakeLists.txt`, and `firmware/partitions.csv`. `test_provision.py`
-reads `credentials.c`. `test_screenshot.py` reads `screenshot.c`,
+reads `credentials.c`. `test_portal.py` reads the portal, DNS, WiFi,
+credential, application, page, and build sources. `test_screenshot.py` reads `screenshot.c`,
 `app_main.c`, and `spotify.c`. It slices `screenshot.c` by function name, so it
 also pins the order of those
 functions. `test_backup.py` and `test_task_cancellation.py`

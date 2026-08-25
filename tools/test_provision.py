@@ -2,127 +2,218 @@
 # SPDX-FileCopyrightText: 2026 Mark Phelps
 # SPDX-License-Identifier: Apache-2.0
 
-"""Verify the legal-consent and temporary-file controls for provisioning."""
+"""Check Spotify-only USB provisioning safeguards."""
 
 from __future__ import annotations
 
-from contextlib import redirect_stdout
-import csv
-from io import StringIO
 from pathlib import Path
-import re
-import tempfile
 from unittest.mock import patch
+import zlib
 
 import provision
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def firmware_nvs_namespace() -> str:
-    source = (ROOT / "firmware/main/credentials.c").read_text(encoding="utf-8")
-    match = re.search(r'#define\s+BOP_NVS_NAMESPACE\s+"([^"]*)"', source)
-    assert match is not None, "credentials.c does not define BOP_NVS_NAMESPACE"
-    return match.group(1)
+def firmware_source(path: str) -> str:
+    return (ROOT / path).read_text(encoding="utf-8")
 
 
-def test_nvs_namespace_matches_the_firmware() -> None:
-    assert provision.NVS_NAMESPACE == firmware_nvs_namespace()
+def test_protocol_constants_match_the_firmware() -> None:
+    source = firmware_source("firmware/main/screenshot.h")
+    assert "#define BOP_USB_PROTOCOL_VERSION 1U" in source
+    assert "#define BOP_USB_HEADER_SIZE 16U" in source
+    assert provision.USB_HEADER_LENGTH == 16
+    assert provision.USB_MAX_PAYLOAD == 1093
+    assert provision.USB_MAGIC == b"P0PU"
+    assert not set(provision.USB_MAGIC) & set(b"nNbBtTsS")
+    screenshot = firmware_source("firmware/main/screenshot.c")
+    assert "#define BOP_SCREENSHOT_TASK_STACK_SIZE 8192U" in screenshot
+    assert 'memcpy(header, "P0PU", 4)' in screenshot
+    assert 'memcmp(frame, "P0PU", 4)' in screenshot
+    host = firmware_source("tools/provision.py")
+    assert "if len(buffer) > USB_NOISE_LIMIT:" in host
 
 
-def test_written_csv_uses_the_firmware_nvs_namespace() -> None:
-    with tempfile.TemporaryDirectory() as directory:
-        path = Path(directory) / "credentials.csv"
-        provision.write_nvs_csv(path, "Test WiFi", "password", "client-id", "refresh-token")
-        rows = list(csv.reader(path.read_text(encoding="utf-8").splitlines()))
-
-    # nvs_partition_gen scopes each key to the namespace row above it, so the
-    # namespace must come first and must be the only one. A second namespace
-    # row would move the keys after it out of the namespace the firmware opens.
-    assert rows[0] == ["key", "type", "encoding", "value"]
-    assert rows[1] == [firmware_nvs_namespace(), "namespace", "", ""]
-    assert [row for row in rows[2:] if row[1] == "namespace"] == []
+def test_provision_does_not_build_or_flash_an_nvs_image() -> None:
+    source = firmware_source("tools/provision.py")
+    for forbidden in ("write_nvs_csv", "generate_nvs", "flash_nvs", "wifi_ssid", "wifi_pass"):
+        assert forbidden not in source
 
 
-def test_legal_documents_are_available() -> None:
-    output = StringIO()
-    with redirect_stdout(output):
-        provision.print_legal_documents()
+def test_firmware_store_path_does_not_touch_wifi_keys() -> None:
+    source = firmware_source("firmware/main/credentials.c")
+    start = source.index("bop_credentials_store_spotify")
+    end = source.index("bop_credentials_load_state", start)
+    store = source[start:end]
+    assert 'nvs_set_str(handle, "client_id"' in store
+    assert 'nvs_set_str(handle, "refresh_tok"' in store
+    assert "nvs_commit(handle)" in store
+    assert "wifi_ssid" not in store
+    assert "wifi_pass" not in store
 
-    for name in ("EULA.md", "PRIVACY.md"):
-        path = ROOT / name
-        assert path.is_file()
-        assert f"{name}: {path.as_uri()}" in output.getvalue()
+
+def test_complete_wifi_recovery_requires_deprovision() -> None:
+    troubleshooting = firmware_source("docs/TROUBLESHOOTING.md")
+    assert "run `mise run deprovision`, then use the captive portal" in troubleshooting
+    assert "run `mise run provision` to write new values" not in troubleshooting
 
 
-def test_refusal_stops_before_authorization() -> None:
+def test_store_payload_contains_only_spotify_values() -> None:
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.response = b""
+            self.request = b""
+
+        def reset_input_buffer(self) -> None:
+            pass
+
+        def write(self, data: bytes | bytearray) -> int:
+            self.request = bytes(data)
+            assert self.request[:1] == provision.USB_START_BYTE
+            _, _, command, _, payload_length, _ = provision.USB_HEADER.unpack(
+                self.request[1 : 1 + provision.USB_HEADER_LENGTH]
+            )
+            assert command in {
+                provision.USB_QUERY_COMMAND,
+                provision.USB_STORE_SPOTIFY_COMMAND,
+            }
+            if command == provision.USB_QUERY_COMMAND:
+                payload = bytes([provision.USB_STATE_WIFI_ONLY])
+            else:
+                payload = b""
+            self.response = (
+                provision.USB_HEADER.pack(
+                    provision.USB_MAGIC,
+                    provision.USB_PROTOCOL_VERSION,
+                    provision.USB_STATUS_OK,
+                    provision.USB_HEADER_LENGTH,
+                    len(payload),
+                    zlib.crc32(payload) & 0xFFFFFFFF,
+                )
+                + payload
+            )
+            if command == provision.USB_STORE_SPOTIFY_COMMAND:
+                request_payload = self.request[1 + provision.USB_HEADER_LENGTH :]
+                assert b"wifi_ssid" not in request_payload
+                assert b"wifi_pass" not in request_payload
+                assert payload_length == len(request_payload)
+            return len(data)
+
+        def flush(self) -> None:
+            pass
+
+        def read(self, size: int) -> bytes:
+            result, self.response = self.response[:size], self.response[size:]
+            return result
+
+        def close(self) -> None:
+            pass
+
+    connection = FakeConnection()
+    with patch.object(provision, "open_connection", return_value=connection):
+        provision.store_spotify(["provision.py"], "client-id", "refresh-token")
+    assert connection.request
+
+
+def test_missing_serial_reexecutes_this_script() -> None:
+    calls: list[tuple[str, list[str], dict[str, str]]] = []
+
+    def reexec(path: str, arguments: list[str], environment: dict[str, str]) -> None:
+        calls.append((path, arguments, environment))
+        raise RuntimeError("re-executed")
+
     with (
-        patch("builtins.input", return_value="I AGREE "),
+        patch.object(provision.importlib.util, "find_spec", return_value=None),
+        patch.object(
+            provision.screenshot_serial.detect_port,
+            "esptool_python",
+            return_value=Path("/esptool-python"),
+        ),
+        patch.object(provision.os, "execve", side_effect=reexec),
+    ):
+        try:
+            provision.provisioning_serial_factory(["tools/provision.py", "--argument"])
+        except RuntimeError as error:
+            assert str(error) == "re-executed"
+        else:
+            raise AssertionError("serial fallback did not re-execute provisioning")
+
+    assert len(calls) == 1
+    path, arguments, environment = calls[0]
+    assert path == "/esptool-python"
+    assert arguments == [
+        "/esptool-python",
+        str((ROOT / "tools/provision.py").resolve()),
+        "--argument",
+    ]
+    assert environment["BOP_PROVISION_PYSERIAL_REEXEC"] == "1"
+
+
+def test_missing_wifi_stops_before_consent() -> None:
+    class QueryConnection:
+        def close(self) -> None:
+            pass
+
+    with (
+        patch("builtins.input") as consent,
+        patch.object(provision, "open_connection", return_value=QueryConnection()),
+        patch.object(provision, "query_state", return_value=provision.USB_STATE_NONE),
         patch.object(provision, "authorize") as authorize,
     ):
         assert provision.main() == 1
-
+    consent.assert_not_called()
     authorize.assert_not_called()
 
 
-def test_acceptance_starts_authorization_after_consent() -> None:
+def test_success_flow_queries_before_authorization() -> None:
     events: list[str] = []
 
-    def agree(prompt: str) -> str:
-        events.append(prompt)
-        return "I AGREE"
+    class QueryConnection:
+        def reset_input_buffer(self) -> None:
+            pass
 
-    def authorize(*_args: object) -> str:
-        events.append("authorize")
-        raise RuntimeError("stop after authorization")
+        def close(self) -> None:
+            events.append("close")
 
     with (
-        patch("builtins.input", side_effect=agree),
-        patch.object(provision, "authorize", side_effect=authorize),
-        patch.object(provision, "prompt_value", side_effect=["Test WiFi", "password", "client-id"]),
-    ):
-        assert provision.main() == 1
-
-    assert events[-1] == "authorize"
-    assert events[0] == provision.LEGAL_AGREEMENT_PROMPT
-
-
-def test_temporary_credentials_are_removed_after_flashing() -> None:
-    temporary_paths: list[Path] = []
-
-    def generate_nvs(_csv_path: Path, image_path: Path) -> None:
-        image_path.write_bytes(b"test image")
-        temporary_paths.append(image_path)
-
-    def flash_nvs(image_path: Path) -> None:
-        assert image_path.is_file()
-
-    output = StringIO()
-    with (
-        patch("builtins.input", return_value="I AGREE"),
-        patch.object(provision, "prompt_value", side_effect=["Test WiFi", "password", "client-id"]),
-        patch.object(provision, "authorize", return_value="refresh-token"),
-        patch.object(provision, "generate_nvs", side_effect=generate_nvs),
-        patch.object(provision, "flash_nvs", side_effect=flash_nvs),
-        redirect_stdout(output),
+        patch.object(
+            provision,
+            "require_legal_agreement",
+            side_effect=lambda: events.append("consent"),
+        ),
+        patch.object(provision, "open_connection", return_value=QueryConnection()),
+        patch.object(
+            provision,
+            "query_state",
+            side_effect=lambda _connection: events.append("query") or provision.USB_STATE_WIFI_ONLY,
+        ),
+        patch.object(provision, "print_dashboard_steps"),
+        patch.object(provision, "prompt_value", return_value="client-id"),
+        patch.object(
+            provision,
+            "authorize",
+            side_effect=lambda *_args: events.append("authorize") or "refresh-token",
+        ),
+        patch.object(provision, "store_spotify", side_effect=lambda *_args: events.append("store")),
     ):
         assert provision.main() == 0
-
-    assert "refresh-token" not in output.getvalue()
-    assert temporary_paths
-    for image_path in temporary_paths:
-        assert not image_path.exists()
-        assert not image_path.with_name("credentials.csv").exists()
+    assert events.index("query") < events.index("consent")
+    assert events.count("consent") == 1
+    assert events.index("consent") < events.index("authorize")
+    assert events.index("authorize") < events.index("store")
 
 
 def main() -> int:
-    test_nvs_namespace_matches_the_firmware()
-    test_written_csv_uses_the_firmware_nvs_namespace()
-    test_legal_documents_are_available()
-    test_refusal_stops_before_authorization()
-    test_acceptance_starts_authorization_after_consent()
-    test_temporary_credentials_are_removed_after_flashing()
-    print("Provisioning consent checks passed.")
+    test_protocol_constants_match_the_firmware()
+    test_provision_does_not_build_or_flash_an_nvs_image()
+    test_firmware_store_path_does_not_touch_wifi_keys()
+    test_complete_wifi_recovery_requires_deprovision()
+    test_store_payload_contains_only_spotify_values()
+    test_missing_serial_reexecutes_this_script()
+    test_missing_wifi_stops_before_consent()
+    test_success_flow_queries_before_authorization()
+    print("Spotify-only provisioning checks passed.")
     return 0
 
 

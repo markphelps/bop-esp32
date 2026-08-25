@@ -10,9 +10,10 @@ By using Bop, you agree to the collection and use described in this policy. The 
 
 ## Data Bop accesses
 
-During provisioning, Bop asks for:
+During captive-portal setup, Bop asks for your WiFi network name and password.
 
-- Your WiFi network name and password.
+The USB provisioning command, `mise run provision`, asks for:
+
 - Your Spotify application client ID.
 - A Spotify refresh token after you approve Spotify authorization.
 
@@ -20,9 +21,17 @@ While Bop runs, it uses the refresh token to request an access token. It request
 
 ## Where data stays and why Bop uses it
 
-The provisioning tool keeps the WiFi values, client ID, and refresh token in a temporary host CSV and image. It removes both files after the NVS image is flashed.
+The captive portal receives the WiFi values from your phone through the WPA2-protected Bop setup AP. The page uses local HTTP.
 
-Bop stores the WiFi values, client ID, and refresh token in the Bop NVS partition on your device. Bop keeps current playback information and its access token in device memory while it runs.
+The firmware keeps the submitted values in bounded memory buffers. It does not log the password or return it in an HTTP response.
+
+After Bop verifies the network, it stores the WiFi values in the device NVS partition. It clears the request and decoded password buffers.
+
+The USB provisioning command keeps the Spotify Client ID and refresh token in bounded host buffers. It sends them through a versioned, length-delimited USB frame.
+
+The USB write changes only the Spotify values. Bop keeps the WiFi values from the captive portal.
+
+Bop keeps current playback information and its access token in device memory while it runs.
 
 Bop uses these values only to connect the device to WiFi, request Spotify playback information, show that information, and send the playback commands that you select. Bop does not sell data, send data to an advertising service, or use a Bop-operated server.
 
