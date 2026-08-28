@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "id": "854f620852db",
+  "state": "active",
+  "target": {
+    "ref": "refs/heads/main",
+    "worktree": "/Users/markphelps/code/bop-esp32",
+    "commit": "87d9765bfffcece88b4a7e90fe5b740637384a46"
+  },
+  "integration": {
+    "ref": "refs/heads/plot-run/854f620852db/integration",
+    "worktree": "/Users/markphelps/code/bop-esp32-plot-run-854f620852db-integration",
+    "checkpoint": "87d9765bfffcece88b4a7e90fe5b740637384a46"
+  },
+  "lanes": []
+}
