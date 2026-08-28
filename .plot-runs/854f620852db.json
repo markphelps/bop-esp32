@@ -10,7 +10,7 @@
   "integration": {
     "ref": "refs/heads/plot-run/854f620852db/integration",
     "worktree": "/Users/markphelps/code/bop-esp32-plot-run-854f620852db-integration",
-    "checkpoint": "e15bfece5a71e95ebdb96e9962f100c6f8a43505"
+    "checkpoint": "3bcdd3ba0d867b8f0c2876c04bfc8f1b5e7d760b"
   },
   "lanes": [
     {
@@ -56,7 +56,7 @@
       "base": "e15bfece5a71e95ebdb96e9962f100c6f8a43505",
       "transport": "",
       "integration": "",
-      "state": "allocated"
+      "state": "created"
     }
   ]
 }
