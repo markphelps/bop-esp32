@@ -10,7 +10,7 @@
   "integration": {
     "ref": "refs/heads/plot-run/854f620852db/integration",
     "worktree": "/Users/markphelps/code/bop-esp32-plot-run-854f620852db-integration",
-    "checkpoint": "fc06d902fa7fdf17eb582c6f687ba1ba0f431926"
+    "checkpoint": "e15bfece5a71e95ebdb96e9962f100c6f8a43505"
   },
   "lanes": [
     {
@@ -48,6 +48,15 @@
       "transport": "76994731d998eb2abd0a121cf59591a74a5454e7",
       "integration": "4c4c1cba5748035cb72a52fb2cd2ba085df27f88",
       "state": "cleaned"
+    },
+    {
+      "item": "kqjx",
+      "branch": "refs/heads/plot-run/854f620852db/lane/kqjx",
+      "worktree": "/Users/markphelps/code/bop-esp32-plot-run-854f620852db-lane-kqjx",
+      "base": "e15bfece5a71e95ebdb96e9962f100c6f8a43505",
+      "transport": "",
+      "integration": "",
+      "state": "allocated"
     }
   ]
 }
