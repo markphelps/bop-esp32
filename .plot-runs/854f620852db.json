@@ -10,7 +10,7 @@
   "integration": {
     "ref": "refs/heads/plot-run/854f620852db/integration",
     "worktree": "/Users/markphelps/code/bop-esp32-plot-run-854f620852db-integration",
-    "checkpoint": "7d9ae94005859b76d131fe88f871b3290f4221a7"
+    "checkpoint": "28b697178b11bff6c5676416f3f418b8b27211be"
   },
   "lanes": [
     {
