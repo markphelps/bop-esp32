@@ -10,7 +10,7 @@
   "integration": {
     "ref": "refs/heads/plot-run/854f620852db/integration",
     "worktree": "/Users/markphelps/code/bop-esp32-plot-run-854f620852db-integration",
-    "checkpoint": "be94d4d11ddcc2ea91d268c58b9fb63ebeca389a"
+    "checkpoint": "cfd92a8ad6f56a18f653ba9874f89ed1958283e4"
   },
   "lanes": [
     {
@@ -39,6 +39,15 @@
       "transport": "b899c0e4e4baf7c1dc759ec91f10a08b5f9e4a33",
       "integration": "1275509141d476bb7662a870b5cba096ed4f7768",
       "state": "cleaned"
+    },
+    {
+      "item": "wwea",
+      "branch": "refs/heads/plot-run/854f620852db/lane/wwea",
+      "worktree": "/Users/markphelps/code/bop-esp32-plot-run-854f620852db-lane-wwea",
+      "base": "cfd92a8ad6f56a18f653ba9874f89ed1958283e4",
+      "transport": "",
+      "integration": "",
+      "state": "allocated"
     }
   ]
 }
