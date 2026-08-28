@@ -10,7 +10,17 @@
   "integration": {
     "ref": "refs/heads/plot-run/854f620852db/integration",
     "worktree": "/Users/markphelps/code/bop-esp32-plot-run-854f620852db-integration",
-    "checkpoint": "87d9765bfffcece88b4a7e90fe5b740637384a46"
+    "checkpoint": "ee5255babdc12d1983ff6d5190208fd6dce6e99e"
   },
-  "lanes": []
+  "lanes": [
+    {
+      "item": "fdja",
+      "branch": "refs/heads/plot-run/854f620852db/lane/fdja",
+      "worktree": "/Users/markphelps/code/bop-esp32-plot-run-854f620852db-lane-fdja",
+      "base": "ee5255babdc12d1983ff6d5190208fd6dce6e99e",
+      "transport": "",
+      "integration": "",
+      "state": "allocated"
+    }
+  ]
 }
