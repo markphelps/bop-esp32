@@ -10,7 +10,7 @@
   "integration": {
     "ref": "refs/heads/plot-run/854f620852db/integration",
     "worktree": "/Users/markphelps/code/bop-esp32-plot-run-854f620852db-integration",
-    "checkpoint": "205bcf446609e446de4ebdb1bff5796450d88d62"
+    "checkpoint": "fbd1106934bcb86b3cc6ef6bb5300760f288b679"
   },
   "lanes": [
     {
@@ -19,8 +19,8 @@
       "worktree": "/Users/markphelps/code/bop-esp32-plot-run-854f620852db-lane-fdja",
       "base": "ee5255babdc12d1983ff6d5190208fd6dce6e99e",
       "transport": "cb129d4e819a5b4864fe3dd1e478b04a8be280a1",
-      "integration": "",
-      "state": "created"
+      "integration": "fbd1106934bcb86b3cc6ef6bb5300760f288b679",
+      "state": "integrated"
     }
   ]
 }
